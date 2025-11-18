@@ -1,0 +1,13 @@
+# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY
+_commit: 2025.11.10-5-g52b3bca
+_src_path: gh:scientific-python/cookie
+backend: hatch
+docs: sphinx
+email: dallan@bnl.gov
+full_name: Bluesky Collaboration
+license: BSD
+org: bluesky
+project_name: bluesky-tiled-plugins
+project_short_description: Plugins for using Tiled with Bluesky
+url: https://github.com/bluesky/bluesky-tiled-plugins
+vcs: true
