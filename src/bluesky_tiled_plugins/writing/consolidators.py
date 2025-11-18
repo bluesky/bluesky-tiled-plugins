@@ -3,7 +3,7 @@ import dataclasses
 import os
 import re
 import warnings
-from typing import Literal, Union, cast
+from typing import Literal, cast
 
 import numpy as np
 from event_model.documents import EventDescriptor, StreamDatum, StreamResource
@@ -37,14 +37,18 @@ class Patch:
 
         # Determine the overall shape and offset
         min_offset = list(patches[0].offset)
-        max_extent = [offset + size for offset, size in zip(patches[0].offset, patches[0].shape)]
+        max_extent = [
+            offset + size for offset, size in zip(patches[0].offset, patches[0].shape)
+        ]
 
         for patch in patches[1:]:
             for i in range(len(min_offset)):
                 min_offset[i] = min(min_offset[i], patch.offset[i])
                 max_extent[i] = max(max_extent[i], patch.offset[i] + patch.shape[i])
 
-        combined_shape = tuple(max_e - min_o for min_o, max_e in zip(min_offset, max_extent))
+        combined_shape = tuple(
+            max_e - min_o for min_o, max_e in zip(min_offset, max_extent)
+        )
         combined_offset = tuple(min_offset)
 
         return cls(shape=combined_shape, offset=combined_offset)
@@ -97,19 +101,31 @@ class ConsolidatorBase:
 
         self.data_key = stream_resource["data_key"]
         self.uri = stream_resource["uri"]
-        self.assets: list[Asset] = [Asset(data_uri=self.uri, is_directory=False, parameter="data_uris", num=0)]
+        self.assets: list[Asset] = [
+            Asset(data_uri=self.uri, is_directory=False, parameter="data_uris", num=0)
+        ]
         self._sres_parameters = stream_resource["parameters"]
 
         # Find datum shape and machine dtype
         data_desc = descriptor["data_keys"][self.data_key]
         if None in data_desc["shape"]:
-            raise NotImplementedError(f"Consolidator for {self.mimetype} does not support variable-sized data")
-        self.datum_shape: tuple[int, ...] = cast(tuple[int, ...], tuple(data_desc["shape"]))
-        self.datum_shape = () if self.datum_shape == (1,) and self.join_method == "stack" else self.datum_shape
+            raise NotImplementedError(
+                f"Consolidator for {self.mimetype} does not support variable-sized data"
+            )
+        self.datum_shape: tuple[int, ...] = cast(
+            "tuple[int, ...]", tuple(data_desc["shape"])
+        )
+        self.datum_shape = (
+            ()
+            if self.datum_shape == (1,) and self.join_method == "stack"
+            else self.datum_shape
+        )
 
         # Check that the datum shape is consistent between the StreamResource and the Descriptor
         if multiplier := self._sres_parameters.get("multiplier"):
-            self.datum_shape = self.datum_shape or (multiplier,)  # If datum_shape is not set
+            self.datum_shape = self.datum_shape or (
+                multiplier,
+            )  # If datum_shape is not set
             if self.datum_shape[0] != multiplier:
                 if self.datum_shape[0] == 1:
                     self.datum_shape = (multiplier,) + self.datum_shape[1:]
@@ -118,24 +134,30 @@ class ConsolidatorBase:
                     # TODO: Check consistency with chunk_shape
 
         # Determine the machine data type; fall back to np.dtype("float64") if not set
-        self.data_type: Union[BuiltinDtype, StructDtype]
+        self.data_type: BuiltinDtype | StructDtype
         dtype_descr = data_desc.get("dtype_numpy")
         if isinstance(dtype_descr, list):
             # np.dtype requires tuples in struct dtypes, not lists
-            self.data_type = StructDtype.from_numpy_dtype(np.dtype(list(map(tuple, dtype_descr))))
+            self.data_type = StructDtype.from_numpy_dtype(
+                np.dtype(list(map(tuple, dtype_descr)))
+            )
         else:
             self.data_type = BuiltinDtype.from_numpy_dtype(np.dtype(dtype_descr))
 
         # Set chunk (or partition) shape
         self.chunk_shape = self._sres_parameters.get("chunk_shape", ())
         if any(d <= 0 for d in self.chunk_shape):
-            raise ValueError(f"Chunk size in all dimensions must be at least 1: chunk_shape={self.chunk_shape}.")
+            raise ValueError(
+                f"Chunk size in all dimensions must be at least 1: chunk_shape={self.chunk_shape}."
+            )
 
         # Possibly overwrite the join_method and join_chunks attributes
         self.join_method = self._sres_parameters.get("join_method", self.join_method)
         self.join_chunks = self._sres_parameters.get("join_chunks", self.join_chunks)
 
-        self._num_rows: int = 0  # Number of rows in the Data Source (all rows, includung skips)
+        self._num_rows: int = (
+            0  # Number of rows in the Data Source (all rows, includung skips)
+        )
         self._seqnums_to_indices_map: dict[int, int] = {}
 
         # Set the dimension names if provided
@@ -143,8 +165,12 @@ class ConsolidatorBase:
 
     @classmethod
     def get_supported_mimetype(cls, sres):
-        if (cls is not ConsolidatorBase) and (sres["mimetype"] not in cls.supported_mimetypes):
-            raise ValueError(f"A data source of {sres['mimetype']} type can not be handled by {cls.__name__}.")
+        if (cls is not ConsolidatorBase) and (
+            sres["mimetype"] not in cls.supported_mimetypes
+        ):
+            raise ValueError(
+                f"A data source of {sres['mimetype']} type can not be handled by {cls.__name__}."
+            )
         return sres["mimetype"]
 
     @property
@@ -185,7 +211,9 @@ class ConsolidatorBase:
             # Generate a list with repeated b summing up to A; append the remainder if necessary
             # e.g. list_summands(13, 3) = [3, 3, 3, 3, 1]
             # if `repeat = n`, n > 1, copy and repeat the entire result n times
-            return tuple([b] * (A // b) + ([A % b] if A % b > 0 else [])) * repeat or (0,)
+            return tuple([b] * (A // b) + ([A % b] if A % b > 0 else [])) * repeat or (
+                0,
+            )
 
         # If chunk shape is less than or equal to the total shape dimensions, chunk each specified dimension
         # starting from the leading dimension
@@ -197,24 +225,29 @@ class ConsolidatorBase:
             ):
                 result = tuple(
                     list_summands(ddim, cdim)
-                    for ddim, cdim in zip(self.shape[: len(self.chunk_shape)], self.chunk_shape)
+                    for ddim, cdim in zip(
+                        self.shape[: len(self.chunk_shape)], self.chunk_shape
+                    )
                 )
             else:
                 result = (
-                    list_summands(self.datum_shape[0], self.chunk_shape[0], repeat=self._num_rows),
+                    list_summands(
+                        self.datum_shape[0], self.chunk_shape[0], repeat=self._num_rows
+                    ),
                     *[
                         list_summands(ddim, cdim)
-                        for ddim, cdim in zip(self.shape[1 : len(self.chunk_shape)], self.chunk_shape[1:])  # noqa
+                        for ddim, cdim in zip(
+                            self.shape[1 : len(self.chunk_shape)], self.chunk_shape[1:]
+                        )  # noqa
                     ],
                 )
-            return result + tuple((d,) for d in self.shape[len(self.chunk_shape) :])  # noqa: E203
+            return result + tuple((d,) for d in self.shape[len(self.chunk_shape) :])
 
         # If chunk shape is longer than the total shape dimensions, raise an error
-        else:
-            raise ValueError(
-                f"The shape of chunks, {self.chunk_shape}, should be less than or equal to the shape of data, "
-                f"{self.shape}."
-            )
+        raise ValueError(
+            f"The shape of chunks, {self.chunk_shape}, should be less than or equal to the shape of data, "
+            f"{self.shape}."
+        )
 
     @property
     def has_skips(self) -> bool:
@@ -299,12 +332,16 @@ class ConsolidatorBase:
 
         # Mimic the necessary aspects of a Tiled node with a namedtuple
         _Node = collections.namedtuple("Node", ["metadata_", "specs"])
-        return adapter_class.from_catalog(self.get_data_source(), _Node({}, []), **self.adapter_parameters())
+        return adapter_class.from_catalog(
+            self.get_data_source(), _Node({}, []), **self.adapter_parameters()
+        )
 
     def update_from_stream_resource(self, stream_resource: StreamResource):
         """Consume an additional related StreamResource document for the same data_key"""
 
-        raise NotImplementedError("This method is not implemented in the base Consolidator class.")
+        raise NotImplementedError(
+            "This method is not implemented in the base Consolidator class."
+        )
 
     def validate(self, fix_errors=False) -> list[str]:
         """Validate the Consolidator's state against the expected structure"""
@@ -312,46 +349,53 @@ class ConsolidatorBase:
         # Initialize adapter from uris and determine the structure
         adapter_class = DEFAULT_ADAPTERS_BY_MIMETYPE[self.mimetype]
         uris = [asset.data_uri for asset in self.assets]
-        structure = adapter_class.from_uris(*uris, **self.adapter_parameters()).structure()
+        structure = adapter_class.from_uris(
+            *uris, **self.adapter_parameters()
+        ).structure()
         notes = []
 
         if self.shape != structure.shape:
             if not fix_errors:
                 raise ValueError(f"Shape mismatch: {self.shape} != {structure.shape}")
-            else:
-                msg = f"Fixed shape mismatch: {self.shape} -> {structure.shape}"
-                warnings.warn(msg, stacklevel=2)
-                if self.join_method == "stack":
-                    self._num_rows = structure.shape[0]
-                    self.datum_shape = structure.shape[1:]
-                elif self.join_method == "concat":
-                    # Estimate the number of frames_per_event (multiplier)
-                    multiplier = 1 if structure.shape[0] % structure.chunks[0][0] else structure.chunks[0][0]
-                    self._num_rows = structure.shape[0] // multiplier
-                    self.datum_shape = (multiplier,) + structure.shape[1:]
-                notes.append(msg)
+            msg = f"Fixed shape mismatch: {self.shape} -> {structure.shape}"
+            warnings.warn(msg, stacklevel=2)
+            if self.join_method == "stack":
+                self._num_rows = structure.shape[0]
+                self.datum_shape = structure.shape[1:]
+            elif self.join_method == "concat":
+                # Estimate the number of frames_per_event (multiplier)
+                multiplier = (
+                    1
+                    if structure.shape[0] % structure.chunks[0][0]
+                    else structure.chunks[0][0]
+                )
+                self._num_rows = structure.shape[0] // multiplier
+                self.datum_shape = (multiplier,) + structure.shape[1:]
+            notes.append(msg)
 
         if self.chunks != structure.chunks:
             if not fix_errors:
-                raise ValueError(f"Chunk shape mismatch: {self.chunks} != {structure.chunks}")
-            else:
-                _chunk_shape = tuple(c[0] for c in structure.chunks)
-                msg = f"Fixed chunk shape mismatch: {self.chunk_shape} -> {_chunk_shape}"
-                warnings.warn(msg, stacklevel=2)
-                self.chunk_shape = _chunk_shape
-                notes.append(msg)
+                raise ValueError(
+                    f"Chunk shape mismatch: {self.chunks} != {structure.chunks}"
+                )
+            _chunk_shape = tuple(c[0] for c in structure.chunks)
+            msg = f"Fixed chunk shape mismatch: {self.chunk_shape} -> {_chunk_shape}"
+            warnings.warn(msg, stacklevel=2)
+            self.chunk_shape = _chunk_shape
+            notes.append(msg)
 
         if self.data_type != structure.data_type:
             if not fix_errors:
-                raise ValueError(f"dtype mismatch: {self.data_type} != {structure.data_type}")
-            else:
-                msg = (
-                    f"Fixed dtype mismatch: {self.data_type.to_numpy_dtype()} "
-                    f"-> {structure.data_type.to_numpy_dtype()}"
+                raise ValueError(
+                    f"dtype mismatch: {self.data_type} != {structure.data_type}"
                 )
-                warnings.warn(msg, stacklevel=2)
-                self.data_type = structure.data_type
-                notes.append(msg)
+            msg = (
+                f"Fixed dtype mismatch: {self.data_type.to_numpy_dtype()} "
+                f"-> {structure.data_type.to_numpy_dtype()}"
+            )
+            warnings.warn(msg, stacklevel=2)
+            self.data_type = structure.data_type
+            notes.append(msg)
 
         if self.dims and (len(self.dims) != len(structure.shape)):
             if not fix_errors:
@@ -359,19 +403,21 @@ class ConsolidatorBase:
                     f"Number of dimension names mismatch for a "
                     f"{len(structure.shape)}-dimensional array: {self.dims}"
                 )
-            else:
-                old_dims = self.dims
-                if len(old_dims) < len(structure.shape):
-                    self.dims = (
-                        ("time",)
-                        + old_dims
-                        + tuple(f"dim{i}" for i in range(len(old_dims) + 1, len(structure.shape)))
+            old_dims = self.dims
+            if len(old_dims) < len(structure.shape):
+                self.dims = (
+                    ("time",)
+                    + old_dims
+                    + tuple(
+                        f"dim{i}"
+                        for i in range(len(old_dims) + 1, len(structure.shape))
                     )
-                else:
-                    self.dims = old_dims[: len(structure.shape)]
-                msg = f"Fixed dimension names: {old_dims} -> {self.dims}"
-                warnings.warn(msg, stacklevel=2)
-                notes.append(msg)
+                )
+            else:
+                self.dims = old_dims[: len(structure.shape)]
+            msg = f"Fixed dimension names: {old_dims} -> {self.dims}"
+            warnings.warn(msg, stacklevel=2)
+            notes.append(msg)
 
         assert self.init_adapter() is not None, "Adapter can not be initialized"
 
@@ -407,7 +453,11 @@ class CSVConsolidator(ConsolidatorBase):
             "skiprows",
             "usecols",
         }
-        return {k: v for k, v in {"header": None, **self._sres_parameters}.items() if k in allowed_keys}
+        return {
+            k: v
+            for k, v in {"header": None, **self._sres_parameters}.items()
+            if k in allowed_keys
+        }
 
 
 class HDF5Consolidator(ConsolidatorBase):
@@ -433,25 +483,39 @@ class HDF5Consolidator(ConsolidatorBase):
     def update_from_stream_resource(self, stream_resource: StreamResource):
         """Add an Asset for a new StreamResource document"""
         if stream_resource["parameters"]["dataset"] != self._sres_parameters["dataset"]:
-            raise ValueError("All StreamResource documents must have the same dataset path.")
-        if stream_resource["parameters"].get("chunk_shape", ()) != self._sres_parameters.get("chunk_shape", ()):
-            raise ValueError("All StreamResource documents must have the same chunk shape.")
+            raise ValueError(
+                "All StreamResource documents must have the same dataset path."
+            )
+        if stream_resource["parameters"].get(
+            "chunk_shape", ()
+        ) != self._sres_parameters.get("chunk_shape", ()):
+            raise ValueError(
+                "All StreamResource documents must have the same chunk shape."
+            )
 
         asset = Asset(
-            data_uri=stream_resource["uri"], is_directory=False, parameter="data_uris", num=len(self.assets)
+            data_uri=stream_resource["uri"],
+            is_directory=False,
+            parameter="data_uris",
+            num=len(self.assets),
         )
         self.assets.append(asset)
 
 
 class MultipartRelatedConsolidator(ConsolidatorBase):
     def __init__(
-        self, permitted_extensions: set[str], stream_resource: StreamResource, descriptor: EventDescriptor
+        self,
+        permitted_extensions: set[str],
+        stream_resource: StreamResource,
+        descriptor: EventDescriptor,
     ):
         super().__init__(stream_resource, descriptor)
         self.permitted_extensions: set[str] = permitted_extensions
         self.assets.clear()  # Assets will be populated based on datum indices
         self.data_uris: list[str] = []
-        self.chunk_shape = self.chunk_shape or (1,)  # I.e. number of frames per file (tiff, jpeg, etc.)
+        self.chunk_shape = self.chunk_shape or (
+            1,
+        )  # I.e. number of frames per file (tiff, jpeg, etc.)
         if self.join_method == "concat":
             assert self.datum_shape[0] % self.chunk_shape[0] == 0, (
                 f"Number of frames per file ({self.chunk_shape[0]}) must divide the total number of frames per "
@@ -497,7 +561,9 @@ class MultipartRelatedConsolidator(ConsolidatorBase):
             .replace("%s", "")
             .replace("{:s}", self._sres_parameters.get("filename", ""), 1)
         )
-        self.template = re.sub(r"%([-+#0 ]*)(\d+)?(?:\.(\d+))?([d])", int_replacer, self.template)
+        self.template = re.sub(
+            r"%([-+#0 ]*)(\d+)?(?:\.(\d+))?([d])", int_replacer, self.template
+        )
 
     def get_datum_uri(self, indx: int):
         """Return a full uri for a datum (an individual image file) based on its index in the sequence.
@@ -513,8 +579,7 @@ class MultipartRelatedConsolidator(ConsolidatorBase):
         if self.template:
             assert os.path.splitext(self.template)[1] in self.permitted_extensions
             return self.uri + self.template.format(indx)
-        else:
-            return self.uri
+        return self.uri
 
     def consume_stream_datum(self, doc: StreamDatum):
         """Determine the number and names of files from indices of datums and the number of files per datum.
@@ -529,7 +594,11 @@ class MultipartRelatedConsolidator(ConsolidatorBase):
         of the resulting dataset, and hence corresponds to a single file.
         """
 
-        files_per_datum = self.datum_shape[0] // self.chunk_shape[0] if self.join_method == "concat" else 1
+        files_per_datum = (
+            self.datum_shape[0] // self.chunk_shape[0]
+            if self.join_method == "concat"
+            else 1
+        )
         first_file_indx = doc["indices"]["start"] * files_per_datum
         last_file_indx = doc["indices"]["stop"] * files_per_datum
         for indx in range(first_file_indx, last_file_indx):

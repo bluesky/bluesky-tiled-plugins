@@ -2,8 +2,9 @@ import copy
 import itertools
 import logging
 from collections import defaultdict, deque, namedtuple
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Optional, Union, cast
+from typing import Any, cast
 from warnings import warn
 
 import numpy
@@ -43,7 +44,13 @@ from tiled.utils import safe_json_dump
 from ..utils import truncate_json_overflow
 from ._dispatcher import Dispatcher
 from ._json_writer import JSONLinesWriter
-from .consolidators import ConsolidatorBase, DataSource, Patch, StructureFamily, consolidator_factory
+from .consolidators import (
+    ConsolidatorBase,
+    DataSource,
+    Patch,
+    StructureFamily,
+    consolidator_factory,
+)
 
 # Aggregate the Event table rows and StreamDatums in batches before writing to Tiled
 BATCH_SIZE = 10000
@@ -57,7 +64,13 @@ MAX_ARRAY_SIZE = 16
 RESERVED_DATA_KEYS = ["time", "seq_num"]
 
 # A lookup table for converting broad JSON types to numpy dtypes
-JSON_TO_NUMPY_DTYPE = {"number": "<f8", "array": "<f8", "boolean": "|b1", "string": "<U0", "integer": "<i8"}
+JSON_TO_NUMPY_DTYPE = {
+    "number": "<f8",
+    "array": "<f8",
+    "boolean": "|b1",
+    "string": "<U0",
+    "integer": "<i8",
+}
 
 # A lookup table for converting Bluesky spec names to MIME types
 MIMETYPE_LOOKUP = defaultdict(
@@ -97,11 +110,17 @@ def concatenate_stream_datums(*docs: StreamDatum):
         return docs[0]
 
     if len({doc["descriptor"] for doc in docs}) > 1:
-        raise ValueError("All StreamDatum documents must reference the same descriptor.")
+        raise ValueError(
+            "All StreamDatum documents must reference the same descriptor."
+        )
     if len({doc["stream_resource"] for doc in docs}) > 1:
-        raise ValueError("All StreamDatum documents must reference the same stream_resource.")
+        raise ValueError(
+            "All StreamDatum documents must reference the same stream_resource."
+        )
     docs = tuple(sorted(docs, key=lambda doc: doc["indices"]["start"]))
-    for d1, d2 in zip(docs[:-1], docs[1:]):  # TODO: use itertools.pairwise(docs) in python 3.10+
+    for d1, d2 in zip(
+        docs[:-1], docs[1:]
+    ):  # TODO: use itertools.pairwise(docs) in python 3.10+
         if d1["indices"]["stop"] != d2["indices"]["start"]:
             raise ValueError("StreamDatum documents must be consecutive.")
 
@@ -109,8 +128,12 @@ def concatenate_stream_datums(*docs: StreamDatum):
         uid=docs[-1]["uid"],
         stream_resource=docs[-1]["stream_resource"],
         descriptor=docs[-1]["descriptor"],
-        indices=StreamRange(start=docs[0]["indices"]["start"], stop=docs[-1]["indices"]["stop"]),
-        seq_nums=StreamRange(start=docs[0]["seq_nums"]["start"], stop=docs[-1]["seq_nums"]["stop"]),
+        indices=StreamRange(
+            start=docs[0]["indices"]["start"], stop=docs[-1]["indices"]["stop"]
+        ),
+        seq_nums=StreamRange(
+            start=docs[0]["seq_nums"]["start"], stop=docs[-1]["seq_nums"]["stop"]
+        ),
     )
 
 
@@ -135,7 +158,12 @@ class _ConditionalBackup:
     This callback is intended to be used with a `RunRouter` and process documents from a single Bluesky run.
     """
 
-    def __init__(self, primary_callback: Callable, backup_callbacks: list[Callable], maxlen: int = 1_000_000):
+    def __init__(
+        self,
+        primary_callback: Callable,
+        backup_callbacks: list[Callable],
+        maxlen: int = 1_000_000,
+    ):
         self.primary_callback = primary_callback
         self.backup_callbacks = backup_callbacks
         self._buffer: deque[tuple[str, DocumentType]] = deque(maxlen=maxlen)
@@ -161,7 +189,8 @@ class _ConditionalBackup:
                         bcb(name, doc)
                     except Exception as e:
                         logger.warning(
-                            f"Backup callback {bcb.__class__.__name__} failed with error: {e}", stacklevel=2
+                            f"Backup callback {bcb.__class__.__name__} failed with error: {e}",
+                            stacklevel=2,
                         )
             self._buffer.clear()
 
@@ -186,8 +215,8 @@ class RunNormalizer(DocumentRouter):
 
     def __init__(
         self,
-        patches: Optional[dict[str, Callable]] = None,
-        spec_to_mimetype: Optional[dict[str, str]] = None,
+        patches: dict[str, Callable] | None = None,
+        spec_to_mimetype: dict[str, str] | None = None,
     ):
         self._token_refs: dict[str, Callable] = {}
         self.dispatcher = Dispatcher()
@@ -198,22 +227,30 @@ class RunNormalizer(DocumentRouter):
             lambda: {"carry": 0, "index": 0}
         )
         self._datum_cache: dict[str, Datum] = {}
-        self._ext_ref_cache: list[ExternalEventDataReference] = []  # Cache for references to external Event data
+        self._ext_ref_cache: list[
+            ExternalEventDataReference
+        ] = []  # Cache for references to external Event data
         self._desc_name_by_uid: dict[str, str] = {}
         self._sres_cache: dict[str, StreamResource] = {}
-        self._emitted: set[str] = set()  # UIDs of the StreamResource documents that have been emitted
+        self._emitted: set[str] = (
+            set()
+        )  # UIDs of the StreamResource documents that have been emitted
         self._int_keys: set[str] = set()  # Names of internal data_keys
         self._ext_keys: set[str] = set()
         self._specs_by_resource_uid = {}  # Keep track of spec by Resource uid, used to enrich datum_kwargs
-        self.notes: list[str] = []  # Human-readable notes about modifications made to the documents
+        self.notes: list[
+            str
+        ] = []  # Human-readable notes about modifications made to the documents
 
-    def _convert_resource_to_stream_resource(self, doc: Union[Resource, StreamResource]) -> StreamResource:
+    def _convert_resource_to_stream_resource(
+        self, doc: Resource | StreamResource
+    ) -> StreamResource:
         """Make changes to and return a shallow copy of StreamRsource dictionary adhering to the new structure.
 
         Kept for back-compatibility with old StreamResource schema from event_model<1.20.0
         or Resource documents that are converted to StreamResources.
         """
-        stream_resource_doc = cast(StreamResource, doc)
+        stream_resource_doc = cast("StreamResource", doc)
 
         if "mimetype" not in doc:
             # The document is a `Resource` or a < v1.20 `StreamResource`.
@@ -225,19 +262,23 @@ class RunNormalizer(DocumentRouter):
                     )
 
             # Convert the Resource (or old StreamResource) document to a StreamResource document
-            resource_dict = cast(dict, doc)
-            stream_resource_doc["mimetype"] = self.spec_to_mimetype[resource_dict.pop("spec")]
+            resource_dict = cast("dict", doc)
+            stream_resource_doc["mimetype"] = self.spec_to_mimetype[
+                resource_dict.pop("spec")
+            ]
             stream_resource_doc["parameters"] = resource_dict.pop("resource_kwargs", {})
             file_path = Path(resource_dict.pop("root").strip("/")).joinpath(
                 resource_dict.pop("resource_path").strip("/")
             )
-            stream_resource_doc["uri"] = "file://localhost/" + str(file_path).lstrip("/")
+            stream_resource_doc["uri"] = "file://localhost/" + str(file_path).lstrip(
+                "/"
+            )
 
         # Ensure that the internal path within HDF5 files is referenced with "dataset" parameter
         if stream_resource_doc["mimetype"] == "application/x-hdf5":
-            stream_resource_doc["parameters"]["dataset"] = stream_resource_doc["parameters"].pop(
-                "path", stream_resource_doc["parameters"].pop("dataset", "")
-            )
+            stream_resource_doc["parameters"]["dataset"] = stream_resource_doc[
+                "parameters"
+            ].pop("path", stream_resource_doc["parameters"].pop("dataset", ""))
 
         # Ensure that only the necessary fields are present in the StreamResource document
         stream_resource_doc["data_key"] = stream_resource_doc.get("data_key", "")
@@ -249,7 +290,7 @@ class RunNormalizer(DocumentRouter):
 
     def _convert_datum_to_stream_datum(
         self, datum_doc: Datum, data_key: str, desc_uid: str, seq_num: int
-    ) -> tuple[Optional[StreamResource], StreamDatum]:
+    ) -> tuple[StreamResource | None, StreamDatum]:
         """Convert the Datum document to the StreamDatum format
 
         This conversion requires (and is triggered when) the Event document is received. The function also returns
@@ -285,7 +326,9 @@ class RunNormalizer(DocumentRouter):
         datum_kwargs = datum_doc.get("datum_kwargs", {})
         frame = datum_kwargs.pop("frame", None)
         if frame is not None:
-            desc_name = self._desc_name_by_uid[desc_uid]  # Name of the descriptor (stream)
+            desc_name = self._desc_name_by_uid[
+                desc_uid
+            ]  # Name of the descriptor (stream)
             _next_index = self._next_frame_index[(desc_name, data_key)]
             index_start = sum(_next_index.values())
             _next_index["index"] = frame + 1
@@ -336,7 +379,9 @@ class RunNormalizer(DocumentRouter):
         # If there are any cached references to external data, emit StreamResources and StreamDatums now
         for datum_id, data_key, desc_uid, seq_num in self._ext_ref_cache:
             if datum_doc := self._datum_cache.pop(datum_id, None):
-                sres_doc, sdat_doc = self._convert_datum_to_stream_datum(datum_doc, data_key, desc_uid, seq_num)
+                sres_doc, sdat_doc = self._convert_datum_to_stream_datum(
+                    datum_doc, data_key, desc_uid, seq_num
+                )
                 if (sres_doc is not None) and (sres_doc["uid"] not in self._emitted):
                     self.emit(DocumentNames.stream_resource, sres_doc)
                     self._emitted.add(sres_doc["uid"])
@@ -346,7 +391,9 @@ class RunNormalizer(DocumentRouter):
                     f"Cannot emit StreamDatum for {data_key} because the corresponding Datum document is missing."
                 )
 
-        doc["_run_normalizer_notes"] = self.notes or []  # Add notes about modifications to the stop document
+        doc["_run_normalizer_notes"] = (
+            self.notes or []
+        )  # Add notes about modifications to the stop document
 
         self.emit(DocumentNames.stop, doc)
 
@@ -359,7 +406,9 @@ class RunNormalizer(DocumentRouter):
         for name in RESERVED_DATA_KEYS:
             if name in doc["data_keys"].keys():
                 if f"_{name}" in doc["data_keys"].keys():
-                    raise ValueError(f"Cannot rename {name} to _{name} because it already exists")
+                    raise ValueError(
+                        f"Cannot rename {name} to _{name} because it already exists"
+                    )
                 doc["data_keys"][f"_{name}"] = doc["data_keys"].pop(name)
                 for obj_data_keys_list in doc.get("object_keys", {}).values():
                     if name in obj_data_keys_list:
@@ -368,8 +417,12 @@ class RunNormalizer(DocumentRouter):
 
         # Rename some fields (in-place) to match the current schema for the descriptor
         # Loop over all dictionaries that specify data_keys (both event data_keys or configuration data_keys)
-        conf_data_keys = (obj["data_keys"].values() for obj in doc.get("configuration", {}).values())
-        for data_keys_spec in itertools.chain(doc["data_keys"].values(), *conf_data_keys):
+        conf_data_keys = (
+            obj["data_keys"].values() for obj in doc.get("configuration", {}).values()
+        )
+        for data_keys_spec in itertools.chain(
+            doc["data_keys"].values(), *conf_data_keys
+        ):
             # Determine numpy data type. From highest precedent to lowest:
             # 1. Try 'dtype_descr', optional, if present -- this is a structural dtype
             # 2. Try 'dtype_numpy', optional in the document schema.
@@ -394,11 +447,17 @@ class RunNormalizer(DocumentRouter):
 
         # Keep names of external and internal data_keys
         data_keys = doc.get("data_keys", {})
-        self._int_keys.update({k for k, v in data_keys.items() if "external" not in v.keys()})
-        self._ext_keys.update({k for k, v in data_keys.items() if "external" in v.keys()})
+        self._int_keys.update(
+            {k for k, v in data_keys.items() if "external" not in v.keys()}
+        )
+        self._ext_keys.update(
+            {k for k, v in data_keys.items() if "external" in v.keys()}
+        )
         for key in self._ext_keys:
             if key in data_keys:
-                data_keys[key]["external"] = data_keys[key].pop("external", "")  # Make sure the value is not None
+                data_keys[key]["external"] = data_keys[key].pop(
+                    "external", ""
+                )  # Make sure the value is not None
 
         # Keep a reference to the descriptor name (stream) by its uid
         self._desc_name_by_uid[doc["uid"]] = doc["name"]
@@ -426,9 +485,13 @@ class RunNormalizer(DocumentRouter):
         event_keys = [k for k in self._int_keys if filled.get(k, True)] + [
             k for k in self._ext_keys if filled.get(k, False)
         ]
-        event_doc = copy.copy(doc)  # Keep another copy with the external data_keys intact
+        event_doc = copy.copy(
+            doc
+        )  # Keep another copy with the external data_keys intact
         event_doc["data"] = {k: v for k, v in doc["data"].items() if k in event_keys}
-        event_doc["timestamps"] = {k: v for k, v in doc["timestamps"].items() if k in event_keys}
+        event_doc["timestamps"] = {
+            k: v for k, v in doc["timestamps"].items() if k in event_keys
+        }
         self.emit(DocumentNames.event, event_doc)
 
         # Part 2. ----- External Data -----
@@ -438,15 +501,22 @@ class RunNormalizer(DocumentRouter):
                 continue  # Skip internal data_keys
             if datum_doc := self._datum_cache.pop(datum_id, None):
                 sres_doc, sdat_doc = self._convert_datum_to_stream_datum(
-                    datum_doc, data_key, desc_uid=doc["descriptor"], seq_num=doc["seq_num"]
+                    datum_doc,
+                    data_key,
+                    desc_uid=doc["descriptor"],
+                    seq_num=doc["seq_num"],
                 )
                 if (sres_doc is not None) and (sres_doc["uid"] not in self._emitted):
                     self.emit(DocumentNames.stream_resource, sres_doc)
-                    self._emitted.add(sres_doc["uid"])  # Mark the StreamResource as emitted
+                    self._emitted.add(
+                        sres_doc["uid"]
+                    )  # Mark the StreamResource as emitted
                 self.emit(DocumentNames.stream_datum, sdat_doc)
             else:
                 # This Event references a Datum that has not been received yet; cache and process it later
-                missing = ExternalEventDataReference(datum_id, data_key, doc["descriptor"], doc["seq_num"])
+                missing = ExternalEventDataReference(
+                    datum_id, data_key, doc["descriptor"], doc["seq_num"]
+                )
                 self._ext_ref_cache.append(missing)
 
     def resource(self, doc: Resource):
@@ -529,24 +599,43 @@ class _RunWriter(DocumentRouter):
             The Tiled client to use for writing the data.
     """
 
-    def __init__(self, client: BaseClient, batch_size: int = BATCH_SIZE, max_array_size: int = MAX_ARRAY_SIZE):
+    def __init__(
+        self,
+        client: BaseClient,
+        batch_size: int = BATCH_SIZE,
+        max_array_size: int = MAX_ARRAY_SIZE,
+    ):
         self.client = client
-        self.root_node: Union[None, Container] = None
-        self._desc_nodes: dict[str, Container] = {}  # references to the descriptor nodes by their uid's and names
+        self.root_node: None | Container = None
+        self._desc_nodes: dict[
+            str, Container
+        ] = {}  # references to the descriptor nodes by their uid's and names
         self._sres_nodes: dict[str, BaseClient] = {}
-        self._internal_tables: dict[str, DataFrameClient] = {}  # references to the internal tables by desc_names
-        self._internal_arrays: dict[str, ArrayClient] = {}  # refs to the internal arrays by desc_name/data_key
+        self._internal_tables: dict[
+            str, DataFrameClient
+        ] = {}  # references to the internal tables by desc_names
+        self._internal_arrays: dict[
+            str, ArrayClient
+        ] = {}  # refs to the internal arrays by desc_name/data_key
         self._stream_resource_cache: dict[str, StreamResource] = {}
         self._consolidators: dict[str, ConsolidatorBase] = {}
         self._internal_data_cache: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        self._external_data_cache: dict[str, StreamDatum] = {}  # sres_uid : (concatenated) StreamDatum
-        self._int_array_keys: dict[str, set[str]] = defaultdict(set)  # data_keys with array data by desc_name
+        self._external_data_cache: dict[
+            str, StreamDatum
+        ] = {}  # sres_uid : (concatenated) StreamDatum
+        self._int_array_keys: dict[str, set[str]] = defaultdict(
+            set
+        )  # data_keys with array data by desc_name
         self._batch_size: int = batch_size
-        self._max_array_size: int = max_array_size  # Max size of arrays to write to tabular storage
+        self._max_array_size: int = (
+            max_array_size  # Max size of arrays to write to tabular storage
+        )
         self.data_keys: dict[str, DataKey] = {}
-        self.access_tags: Optional[list[str]] = None
+        self.access_tags: list[str] | None = None
 
-    def _write_internal_data(self, data_cache: list[dict[str, Any]], desc_node: Container):
+    def _write_internal_data(
+        self, data_cache: list[dict[str, Any]], desc_node: Container
+    ):
         """Write the internal data table to Tiled and clear the cache."""
 
         desc_name = desc_node.item["id"]  # Name of the descriptor (stream)
@@ -558,7 +647,11 @@ class _RunWriter(DocumentRouter):
                 metadata = truncate_json_overflow(self.data_keys.get(key, {}))
                 dims = ("time",) + tuple(f"dim_{i}" for i in range(1, array.ndim))
                 arr_client = desc_node.write_array(
-                    array, key=key, metadata=metadata, dims=dims, access_tags=self.access_tags
+                    array,
+                    key=key,
+                    metadata=metadata,
+                    dims=dims,
+                    access_tags=self.access_tags,
                 )
                 self._internal_arrays[f"{desc_name}/{key}"] = arr_client
             else:
@@ -570,18 +663,27 @@ class _RunWriter(DocumentRouter):
 
         if not (df_client := self._internal_tables.get(desc_name)):
             # Create a new "internal" data node and write the initial piece of data
-            metadata = {k: v for k, v in self.data_keys.items() if k in table.column_names}
+            metadata = {
+                k: v for k, v in self.data_keys.items() if k in table.column_names
+            }
             metadata = truncate_json_overflow(metadata)
             # Replace any nulls in the schema with string type
             schema = copy.copy(table.schema)
             for i, field in enumerate(table.schema):
                 if pyarrow.types.is_null(field.type):
                     schema = schema.set(i, field.with_type(pyarrow.string()))
-                elif pyarrow.types.is_list(field.type) and pyarrow.types.is_null(field.type.value_type):
-                    schema = schema.set(i, field.with_type(pyarrow.list_(pyarrow.string())))
+                elif pyarrow.types.is_list(field.type) and pyarrow.types.is_null(
+                    field.type.value_type
+                ):
+                    schema = schema.set(
+                        i, field.with_type(pyarrow.list_(pyarrow.string()))
+                    )
             # Initialize the table and keep a reference to the client
             df_client = desc_node.create_appendable_table(
-                schema=schema, key="internal", metadata=metadata, access_tags=self.access_tags
+                schema=schema,
+                key="internal",
+                metadata=metadata,
+                access_tags=self.access_tags,
             )
             self._internal_tables[desc_name] = df_client
 
@@ -596,10 +698,12 @@ class _RunWriter(DocumentRouter):
         return sres_node, consolidator, patch
 
     def _update_data_source_for_node(
-        self, node: BaseClient, data_source: DataSource, patch: Optional[Patch] = None
+        self, node: BaseClient, data_source: DataSource, patch: Patch | None = None
     ):
         """Update DataSource of the node in Tiled corresponding to the StreamResource"""
-        data_source.id = node.data_sources()[0].id  # ID of the existing DataSource record
+        data_source.id = node.data_sources()[
+            0
+        ].id  # ID of the existing DataSource record
         handle_error(
             node.context.http_client.put(
                 node.uri.replace("/metadata/", "/data_source/", 1),
@@ -617,7 +721,9 @@ class _RunWriter(DocumentRouter):
         """Register (or update) the external data from StreamDatum in Tiled"""
 
         sres_node, consolidator, patch = self._update_consolidator(doc)
-        self._update_data_source_for_node(sres_node, consolidator.get_data_source(), patch)
+        self._update_data_source_for_node(
+            sres_node, consolidator.get_data_source(), patch
+        )
 
     def start(self, doc: RunStart):
         doc = copy.copy(doc)
@@ -631,28 +737,37 @@ class _RunWriter(DocumentRouter):
 
     def stop(self, doc: RunStop):
         if self.root_node is None:
-            raise RuntimeError("RunWriter is not properly initialized: no Start document has been recorded.")
+            raise RuntimeError(
+                "RunWriter is not properly initialized: no Start document has been recorded."
+            )
 
         # Write the cached internal data
         for desc_name, data_cache in self._internal_data_cache.items():
             if data_cache:
-                self._write_internal_data(data_cache, desc_node=self._desc_nodes[desc_name])
+                self._write_internal_data(
+                    data_cache, desc_node=self._desc_nodes[desc_name]
+                )
                 data_cache.clear()
 
         # Write the cached StreamDatums data.
         # Only update the data_source _once_ per each StreamResource node, even if consuming multiple StreamDatums.
-        updated_node_and_cons: dict[tuple[BaseClient, ConsolidatorBase], list[Patch]] = defaultdict(list)
+        updated_node_and_cons: dict[
+            tuple[BaseClient, ConsolidatorBase], list[Patch]
+        ] = defaultdict(list)
         for stream_datum_doc in self._external_data_cache.values():
             sres_node, consolidator, patch = self._update_consolidator(stream_datum_doc)
             updated_node_and_cons[(sres_node, consolidator)].append(patch)
         for (sres_node, consolidator), patches in updated_node_and_cons.items():
             final_patch = Patch.combine_patches(patches)
-            self._update_data_source_for_node(sres_node, consolidator.get_data_source(), patch=final_patch)
+            self._update_data_source_for_node(
+                sres_node, consolidator.get_data_source(), patch=final_patch
+            )
 
         # Validate structure for some StreamResource nodes, select unique pairs of (sres_node, consolidator)
         notes = []
         node_and_cons = {
-            (sres_node, self._consolidators[sres_uid]) for sres_uid, sres_node in self._sres_nodes.items()
+            (sres_node, self._consolidators[sres_uid])
+            for sres_uid, sres_node in self._sres_nodes.items()
         }
         for sres_node, consolidator in node_and_cons:
             if consolidator._sres_parameters.get("_validate", False):
@@ -661,16 +776,23 @@ class _RunWriter(DocumentRouter):
                     _notes = consolidator.validate(fix_errors=True)
                     notes.extend([title + ": " + note for note in _notes])
                 except Exception as e:
-                    msg = f"{type(e).__name__}: " + str(e).replace("\n", " ").replace("\r", "").strip()
+                    msg = (
+                        f"{type(e).__name__}: "
+                        + str(e).replace("\n", " ").replace("\r", "").strip()
+                    )
                     msg = title + f" failed with error: {msg}"
                     warn(msg, stacklevel=2)
                     notes.append(msg)
-                self._update_data_source_for_node(sres_node, consolidator.get_data_source())
+                self._update_data_source_for_node(
+                    sres_node, consolidator.get_data_source()
+                )
 
         # Write the stop document to the metadata
         for key in self._internal_arrays.keys():
             notes.append(f"Internal array data in '{key}' written as zarr format.")
-        notes = doc.pop("_run_normalizer_notes", []) + notes  # Retrieve notes from the normalizer, if any
+        notes = (
+            doc.pop("_run_normalizer_notes", []) + notes
+        )  # Retrieve notes from the normalizer, if any
         md_update = {"stop": doc, **({"notes": notes} if notes else {})}
         self.root_node.update_metadata(metadata=md_update, drop_revision=True)
 
@@ -682,7 +804,11 @@ class _RunWriter(DocumentRouter):
         # Since the data_keys are guaranteed to be unique, we don't need to perform client-side validation of the
         # "composite" spec constraints and can use the `.base` (Container) client directly.
         if desc_name not in self._desc_nodes.keys():
-            metadata = {k: v for k, v in doc.items() if k not in {"name", "object_keys", "run_start"}}
+            metadata = {
+                k: v
+                for k, v in doc.items()
+                if k not in {"name", "object_keys", "run_start"}
+            }
             desc_node = self.root_node.create_container(
                 key=desc_name,
                 metadata=truncate_json_overflow(metadata),
@@ -703,18 +829,24 @@ class _RunWriter(DocumentRouter):
             # We assume tha the full descriptor has been already received, so we don't need to store everything
             # but only the uid, timestamp, and also data and timestamps in configuration (without conf specs).
             desc_node = self._desc_nodes[desc_name]
-            updates = desc_node.metadata.get("_config_updates", []) + [{"uid": doc["uid"], "time": doc["time"]}]
+            updates = desc_node.metadata.get("_config_updates", []) + [
+                {"uid": doc["uid"], "time": doc["time"]}
+            ]
             if conf_meta := doc.get("configuration"):
                 updates[-1].update({"configuration": conf_meta})
             # Update the metadata with the new configuration
             metadata = {"_config_updates": truncate_json_overflow(updates)}
             desc_node.update_metadata(metadata=metadata, drop_revision=True)
 
-        self._desc_nodes[doc["uid"]] = self._desc_nodes[desc_name] = desc_node  # Keep a reference to the node
+        self._desc_nodes[doc["uid"]] = self._desc_nodes[desc_name] = (
+            desc_node  # Keep a reference to the node
+        )
 
     def event(self, doc: Event):
         desc_uid = doc["descriptor"]
-        desc_name = self._desc_nodes[desc_uid].item["id"]  # Name of the descriptor (stream)
+        desc_name = self._desc_nodes[desc_uid].item[
+            "id"
+        ]  # Name of the descriptor (stream)
 
         # Do not write the data immediately; collect it in a cache and write in bulk later
         data_cache = self._internal_data_cache[desc_name]
@@ -733,7 +865,9 @@ class _RunWriter(DocumentRouter):
     def stream_resource(self, doc: StreamResource):
         self._stream_resource_cache[doc["uid"]] = doc
 
-    def get_sres_node(self, sres_uid: str, desc_uid: Optional[str] = None) -> tuple[BaseClient, ConsolidatorBase]:
+    def get_sres_node(
+        self, sres_uid: str, desc_uid: str | None = None
+    ) -> tuple[BaseClient, ConsolidatorBase]:
         """Get the Tiled node and the associate Consolidator corresponding to the data_key in StreamResource
 
         If the node does not exist, register it from a cached StreamResource document. Keep a reference to the
@@ -750,12 +884,16 @@ class _RunWriter(DocumentRouter):
 
         elif sres_uid in self._stream_resource_cache.keys():
             if not desc_uid:
-                raise RuntimeError("Descriptor uid must be specified to initialize a Stream Resource node")
+                raise RuntimeError(
+                    "Descriptor uid must be specified to initialize a Stream Resource node"
+                )
 
             # Define `full_data_key` as desc_name + _ + data_key to ensure uniqueness across streams
             sres_doc = self._stream_resource_cache[sres_uid]
             desc_node = self._desc_nodes[desc_uid]
-            full_data_key = f"{desc_node.item['id']}_{sres_doc['data_key']}"  # desc_name + data_key
+            full_data_key = (
+                f"{desc_node.item['id']}_{sres_doc['data_key']}"  # desc_name + data_key
+            )
 
             # Check if there already exists a Node and a Consolidator for this data_key
             # i.e. this is an additional StreamResource, whose data should be concatenated with the existing one
@@ -774,10 +912,14 @@ class _RunWriter(DocumentRouter):
                     access_tags=self.access_tags,
                 )
 
-            self._consolidators[sres_uid] = self._consolidators[full_data_key] = consolidator
+            self._consolidators[sres_uid] = self._consolidators[full_data_key] = (
+                consolidator
+            )
             self._sres_nodes[sres_uid] = self._sres_nodes[full_data_key] = sres_node
         else:
-            raise RuntimeError(f"Stream Resource {sres_uid} is referenced before being received.")
+            raise RuntimeError(
+                f"Stream Resource {sres_uid} is referenced before being received."
+            )
 
         return sres_node, consolidator
 
@@ -792,7 +934,10 @@ class _RunWriter(DocumentRouter):
         if cached_stream_datum_doc := self._external_data_cache.pop(sres_uid, None):
             try:
                 _doc = concatenate_stream_datums(cached_stream_datum_doc, doc)
-                if _doc["indices"]["stop"] - _doc["indices"]["start"] >= self._batch_size:
+                if (
+                    _doc["indices"]["stop"] - _doc["indices"]["start"]
+                    >= self._batch_size
+                ):
                     self._write_external_data(_doc)
                 else:
                     self._external_data_cache[sres_uid] = _doc
@@ -848,10 +993,10 @@ class TiledWriter:
         self,
         client: BaseClient,
         *,
-        normalizer: Optional[type[DocumentRouter]] = RunNormalizer,
-        patches: Optional[dict[str, Callable]] = None,
-        spec_to_mimetype: Optional[dict[str, str]] = None,
-        backup_directory: Optional[str] = None,
+        normalizer: type[DocumentRouter] | None = RunNormalizer,
+        patches: dict[str, Callable] | None = None,
+        spec_to_mimetype: dict[str, str] | None = None,
+        backup_directory: str | None = None,
         batch_size: int = BATCH_SIZE,
         max_array_size: int = MAX_ARRAY_SIZE,
     ):
@@ -866,11 +1011,17 @@ class TiledWriter:
 
     def _factory(self, name, doc):
         """Factory method to create a callback for writing a single run into Tiled."""
-        cb = run_writer = _RunWriter(self.client, batch_size=self._batch_size, max_array_size=self._max_array_size)
+        cb = run_writer = _RunWriter(
+            self.client,
+            batch_size=self._batch_size,
+            max_array_size=self._max_array_size,
+        )
 
         if self._normalizer:
             # If normalize is True, create a RunNormalizer callback to update documents to the latest schema
-            cb = self._normalizer(patches=self.patches, spec_to_mimetype=self.spec_to_mimetype)
+            cb = self._normalizer(
+                patches=self.patches, spec_to_mimetype=self.spec_to_mimetype
+            )
             cb.subscribe(run_writer)
 
         if self.backup_directory:
@@ -884,10 +1035,10 @@ class TiledWriter:
         cls,
         uri,
         *,
-        normalizer: Optional[type[DocumentRouter]] = RunNormalizer,
-        patches: Optional[dict[str, Callable]] = None,
-        spec_to_mimetype: Optional[dict[str, str]] = None,
-        backup_directory: Optional[str] = None,
+        normalizer: type[DocumentRouter] | None = RunNormalizer,
+        patches: dict[str, Callable] | None = None,
+        spec_to_mimetype: dict[str, str] | None = None,
+        backup_directory: str | None = None,
         batch_size: int = BATCH_SIZE,
         **kwargs,
     ):
@@ -906,10 +1057,10 @@ class TiledWriter:
         cls,
         profile,
         *,
-        normalizer: Optional[type[DocumentRouter]] = RunNormalizer,
-        patches: Optional[dict[str, Callable]] = None,
-        spec_to_mimetype: Optional[dict[str, str]] = None,
-        backup_directory: Optional[str] = None,
+        normalizer: type[DocumentRouter] | None = RunNormalizer,
+        patches: dict[str, Callable] | None = None,
+        spec_to_mimetype: dict[str, str] | None = None,
+        backup_directory: str | None = None,
         batch_size: int = BATCH_SIZE,
         **kwargs,
     ):

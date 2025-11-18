@@ -2,7 +2,6 @@ import functools
 import keyword
 import warnings
 from collections import defaultdict
-from typing import Optional
 
 import numpy
 import xarray
@@ -80,7 +79,9 @@ class BlueskyEventStreamV2Mongo(BlueskyEventStream):
         # Build a list of entries that are valid attribute names
         # and add them to __dir__ so that they tab-complete.
         tab_completable_entries = [
-            entry for entry in self if (entry.isidentifier() and (not keyword.iskeyword(entry)))
+            entry
+            for entry in self
+            if (entry.isidentifier() and (not keyword.iskeyword(entry)))
         ]
         return super().__dir__() + tab_completable_entries
 
@@ -109,7 +110,9 @@ and then read() will return dask objects.""",
             DeprecationWarning,
             stacklevel=2,
         )
-        return self.new_variation(structure_clients=DEFAULT_STRUCTURE_CLIENT_DISPATCH["dask"]).read()
+        return self.new_variation(
+            structure_clients=DEFAULT_STRUCTURE_CLIENT_DISPATCH["dask"]
+        ).read()
 
 
 class BlueskyEventStreamV2SQL(OneShotCachedMap):
@@ -135,7 +138,11 @@ class BlueskyEventStreamV2SQL(OneShotCachedMap):
         ts_keys = ["time"]
         if "internal" in stream_parts:
             internal_cols = stream_client.base["internal"].columns
-            data_keys += [col for col in internal_cols if col != "seq_num" and not col.startswith("ts_")]
+            data_keys += [
+                col
+                for col in internal_cols
+                if col != "seq_num" and not col.startswith("ts_")
+            ]
             ts_keys += [col for col in internal_cols if col.startswith("ts_")]
 
         # Construct clients for the configuration data
@@ -158,8 +165,12 @@ class BlueskyEventStreamV2SQL(OneShotCachedMap):
         internal_dict = {
             "data": lambda: CompositeSubsetClient(stream_client, data_keys),
             "timestamps": lambda: CompositeSubsetClient(stream_client, ts_keys),
-            "config": lambda: VirtualContainer({k: ConfigDatasetClient(v) for k, v in cf_vals.items()}),
-            "config_timestamps": lambda: VirtualContainer({k: ConfigDatasetClient(v) for k, v in cf_time.items()}),
+            "config": lambda: VirtualContainer(
+                {k: ConfigDatasetClient(v) for k, v in cf_vals.items()}
+            ),
+            "config_timestamps": lambda: VirtualContainer(
+                {k: ConfigDatasetClient(v) for k, v in cf_time.items()}
+            ),
         }
 
         # Construct the metadata
@@ -177,12 +188,16 @@ class BlueskyEventStreamV2SQL(OneShotCachedMap):
         # Go back to the BlueskyRun node and request the documents
         # the path is: bs_run_node/streams/current_stream (old) or bs_run_node/current_stream (new)
         bs_run_node = self["data"].parent
-        if bs_run_node.item["id"] == "streams" and ("BlueskyRun" not in {s.name for s in bs_run_node.specs}):
+        if bs_run_node.item["id"] == "streams" and (
+            "BlueskyRun" not in {s.name for s in bs_run_node.specs}
+        ):
             # The parent is the old "streams" node, go up one more level
             bs_run_node = bs_run_node.parent
         stream_name = self.metadata.get("stream_name") or self["data"].item["id"]
         return [
-            doc for name, doc in bs_run_node.documents() if name == "descriptor" and doc["name"] == stream_name
+            doc
+            for name, doc in bs_run_node.documents()
+            if name == "descriptor" and doc["name"] == stream_name
         ]
 
     @property
@@ -225,7 +240,10 @@ class ConfigDatasetClient(DictView):
         # Delay this import for fast startup. In some cases only metadata
         # is handled, and we can avoid the xarray import altogether.
 
-        d = {k: {"dims": "time", "data": v.read()} for k, v in self._internal_dict.items()}
+        d = {
+            k: {"dims": "time", "data": v.read()}
+            for k, v in self._internal_dict.items()
+        }
         return xarray.Dataset.from_dict(d)
 
 
@@ -233,16 +251,24 @@ class CompositeSubsetClient(CompositeClient):
     """A composite client with only a subset of its keys exposed."""
 
     def __init__(self, client, keys=None):
-        super().__init__(context=client.context, item=client.item, structure_clients=client.structure_clients)
+        super().__init__(
+            context=client.context,
+            item=client.item,
+            structure_clients=client.structure_clients,
+        )
         self._keys = keys or list(client.keys())
 
     def __repr__(self):
         return node_repr(self, self._keys).replace(type(self).__name__, "DatasetClient")
 
-    def _keys_slice(self, start, stop, direction, page_size: Optional[int] = None, **kwargs):
+    def _keys_slice(
+        self, start, stop, direction, page_size: int | None = None, **kwargs
+    ):
         yield from self._keys[start : stop : -1 if direction < 0 else 1]  # noqa: 203
 
-    def _items_slice(self, start, stop, direction, page_size: Optional[int] = None, **kwargs):
+    def _items_slice(
+        self, start, stop, direction, page_size: int | None = None, **kwargs
+    ):
         for key in self._keys[start : stop : -1 if direction < 0 else 1]:  # noqa: 203
             yield key, self[key]
 
@@ -349,9 +375,13 @@ class BlueskyEventStreamV3(BlueskyEventStream, CompositeClient):
         stream_name = self.metadata.get("stream_name") or self.item["id"]
         # the path is: bs_run_node/streams/current_stream (old) or bs_run_node/current_stream (new)
         bs_run_node = self.parent
-        if bs_run_node.item["id"] == "streams" and ("BlueskyRun" not in {s.name for s in bs_run_node.specs}):
+        if bs_run_node.item["id"] == "streams" and (
+            "BlueskyRun" not in {s.name for s in bs_run_node.specs}
+        ):
             # The parent is the old "streams" node, go up one more level
             bs_run_node = bs_run_node.parent
         return [
-            doc for name, doc in bs_run_node.documents() if name == "descriptor" and doc["name"] == stream_name
+            doc
+            for name, doc in bs_run_node.documents()
+            if name == "descriptor" and doc["name"] == stream_name
         ]

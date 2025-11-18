@@ -5,14 +5,23 @@ import json
 import keyword
 import warnings
 from datetime import datetime
-from typing import Optional
 
 from tiled.client.container import Container
 from tiled.client.utils import handle_error
 
 from ._common import IPYTHON_METHODS
 from .bluesky_event_stream import BlueskyEventStreamV2SQL
-from .document import DatumPage, Descriptor, Event, EventPage, Resource, Start, Stop, StreamDatum, StreamResource
+from .document import (
+    DatumPage,
+    Descriptor,
+    Event,
+    EventPage,
+    Resource,
+    Start,
+    Stop,
+    StreamDatum,
+    StreamResource,
+)
 
 _document_types = {
     "start": Start,
@@ -102,7 +111,9 @@ class BlueskyRun(Container):
         # Build a list of entries that are valid attribute names
         # and add them to __dir__ so that they tab-complete.
         tab_completable_entries = [
-            entry for entry in self if (entry.isidentifier() and (not keyword.iskeyword(entry)))
+            entry
+            for entry in self
+            if (entry.isidentifier() and (not keyword.iskeyword(entry)))
         ]
         return super().__dir__() + tab_completable_entries
 
@@ -156,7 +167,9 @@ class BlueskyRunV2(BlueskyRun):
     def __new__(cls, context, *, item, structure_clients, **kwargs):
         # When inheriting, return the class itself
         if cls is not BlueskyRunV2:
-            return super().__new__(cls, context, item=item, structure_clients=structure_clients, **kwargs)
+            return super().__new__(
+                cls, context, item=item, structure_clients=structure_clients, **kwargs
+            )
 
         _cls = BlueskyRunV2SQL if cls._is_sql(item) else BlueskyRunV2Mongo
         return _cls(context, item=item, structure_clients=structure_clients, **kwargs)
@@ -177,11 +190,15 @@ class BlueskyRunV2(BlueskyRun):
     @property
     def v3(self):
         if not self._is_sql(self.item):
-            raise NotImplementedError("v3 is not available for MongoDB-based BlueskyRun")
+            raise NotImplementedError(
+                "v3 is not available for MongoDB-based BlueskyRun"
+            )
 
         structure_clients = copy.copy(self.structure_clients)
         structure_clients.set("BlueskyRun", lambda: BlueskyRunV3)
-        return BlueskyRunV3(self.context, item=self.item, structure_clients=structure_clients)
+        return BlueskyRunV3(
+            self.context, item=self.item, structure_clients=structure_clients
+        )
 
 
 class BlueskyRunV2Mongo(BlueskyRunV2):
@@ -248,7 +265,12 @@ class _BlueskyRunSQL(BlueskyRun):
         are derived from the keys under the "streams" namespace.
         """
 
-        return sorted(k for k in (self.base["streams"] if self._has_streams_namespace else self.base))
+        return sorted(
+            k
+            for k in (
+                self.base["streams"] if self._has_streams_namespace else self.base
+            )
+        )
 
     def __getitem__(self, key):
         if isinstance(key, tuple):
@@ -267,7 +289,9 @@ class _BlueskyRunSQL(BlueskyRun):
                     key.insert(-1, "internal")
                     return base_class.__getitem__("/".join(key))
                 except KeyError:
-                    raise KeyError(f"Key '{key[-1]}' not found in the BlueskyRun container") from e
+                    raise KeyError(
+                        f"Key '{key[-1]}' not found in the BlueskyRun container"
+                    ) from e
 
         # Back-compatibility for old versions of BlueskyRun layout that included 'streams' namespace.
         # This takes into account the possibility of an actual BlueskyEventStream to be named 'streams'.
@@ -283,7 +307,7 @@ class _BlueskyRunSQL(BlueskyRun):
                     stacklevel=2,
                 )
                 return self
-            elif key.split("/")[0] != "streams":
+            if key.split("/")[0] != "streams":
                 try:
                     result = _base_getitem("streams/" + key)
                     warnings.warn(
@@ -299,7 +323,7 @@ class _BlueskyRunSQL(BlueskyRun):
                     raise KeyError from e
             elif key.split("/")[0] == "streams":
                 try:
-                    result = _base_getitem(key[len("streams/") :])  # noqa
+                    result = _base_getitem(key[len("streams/") :])
                     warnings.warn(
                         f"Looks like you are trying to access '{key}' via a 'streams' namespace, "
                         "but there is no 'streams' namespace in this BlueskyRun, which follows the new layout. "
@@ -313,15 +337,22 @@ class _BlueskyRunSQL(BlueskyRun):
             else:
                 raise KeyError from e
 
-    def _keys_slice(self, start, stop, direction, page_size: Optional[int] = None, **kwargs):
-        sorted_keys = reversed(self._stream_names) if direction < 0 else self._stream_names
+    def _keys_slice(
+        self, start, stop, direction, page_size: int | None = None, **kwargs
+    ):
+        sorted_keys = (
+            reversed(self._stream_names) if direction < 0 else self._stream_names
+        )
         return (yield from sorted_keys[start:stop])
 
-    def _items_slice(self, start, stop, direction, page_size: Optional[int] = None, **kwargs):
-        sorted_keys = reversed(self._stream_names) if direction < 0 else self._stream_names
+    def _items_slice(
+        self, start, stop, direction, page_size: int | None = None, **kwargs
+    ):
+        sorted_keys = (
+            reversed(self._stream_names) if direction < 0 else self._stream_names
+        )
         for key in sorted_keys[start:stop]:
             yield key, self[key]
-        return
 
     def __iter__(self):
         yield from self._stream_names
@@ -351,7 +382,9 @@ class BlueskyRunV2SQL(BlueskyRunV2, _BlueskyRunSQL):
             )
 
         stream_composite_client = super().__getitem__(key)
-        stream_container = BlueskyEventStreamV2SQL.from_stream_client(stream_composite_client)
+        stream_container = BlueskyEventStreamV2SQL.from_stream_client(
+            stream_composite_client
+        )
 
         return stream_container[rest[0]] if rest else stream_container
 
@@ -364,9 +397,12 @@ class BlueskyRunV3(_BlueskyRunSQL):
     def __new__(cls, context, *, item, structure_clients, **kwargs):
         # When inheriting, return the class itself
         if cls is not BlueskyRunV3 or cls._is_sql(item):
-            return super().__new__(cls, context, item=item, structure_clients=structure_clients, **kwargs)
-        else:
-            return BlueskyRunV2Mongo(context, item=item, structure_clients=structure_clients, **kwargs)
+            return super().__new__(
+                cls, context, item=item, structure_clients=structure_clients, **kwargs
+            )
+        return BlueskyRunV2Mongo(
+            context, item=item, structure_clients=structure_clients, **kwargs
+        )
 
     def __getattr__(self, key):
         # A shortcut to the stream data
@@ -396,7 +432,9 @@ class BlueskyRunV3(_BlueskyRunSQL):
     def v2(self):
         structure_clients = copy.copy(self.structure_clients)
         structure_clients.set("BlueskyRun", lambda: BlueskyRunV2)
-        return BlueskyRunV2(self.context, item=self.item, structure_clients=structure_clients)
+        return BlueskyRunV2(
+            self.context, item=self.item, structure_clients=structure_clients
+        )
 
     @property
     def v3(self):

@@ -3,7 +3,7 @@ import os
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Optional, Union, cast
+from typing import cast
 from urllib.parse import parse_qs, urlparse
 
 import bluesky.plan_stubs as bps
@@ -22,11 +22,12 @@ from bluesky.protocols import (
     StreamAsset,
     WritesStreamAssets,
 )
-from bluesky_tiled_plugins import TiledWriter
 from event_model.documents.event_descriptor import DataKey
 from event_model.documents.stream_datum import StreamDatum
 from event_model.documents.stream_resource import StreamResource
 from tiled.client import record_history
+
+from bluesky_tiled_plugins import TiledWriter
 
 rng = np.random.default_rng(12345)
 
@@ -35,8 +36,11 @@ rng = np.random.default_rng(12345)
 def catalog(tmp_path_factory):
     tiled_catalog = pytest.importorskip("tiled.catalog")
     tmp_path = tmp_path_factory.mktemp("tiled_catalog")
-    yield tiled_catalog.in_memory(
-        writable_storage={"filesystem": str(tmp_path), "sql": f"duckdb:///{tmp_path}/test.db"},
+    return tiled_catalog.in_memory(
+        writable_storage={
+            "filesystem": str(tmp_path),
+            "sql": f"duckdb:///{tmp_path}/test.db",
+        },
         readable_storage=[str(tmp_path.parent)],
     )
 
@@ -44,7 +48,7 @@ def catalog(tmp_path_factory):
 @pytest.fixture(scope="module")
 def app(catalog):
     tsa = pytest.importorskip("tiled.server.app")
-    yield tsa.build_app(catalog)
+    return tsa.build_app(catalog)
 
 
 @pytest.fixture(scope="module")
@@ -57,7 +61,7 @@ def context(app):
 @pytest.fixture(scope="module")
 def client(context):
     tc = pytest.importorskip("tiled.client")
-    yield tc.from_context(context)
+    return tc.from_context(context)
 
 
 @pytest.fixture(scope="module")
@@ -70,12 +74,16 @@ def external_assets_folder(tmp_path_factory):
     with h5py.File(temp_dir.joinpath("dataset.h5"), "w") as file:
         grp = file.create_group("entry").create_group("data")
         grp.create_dataset("data_1", data=rng.random(size=(3,), dtype="float64"))
-        grp.create_dataset("data_2", data=rng.integers(-10, 10, size=(3, 13, 17)), dtype="<i8")
+        grp.create_dataset(
+            "data_2", data=rng.integers(-10, 10, size=(3, 13, 17)), dtype="<i8"
+        )
 
     # Create a second external hdf5 file to be declared in a different stream resource
     with h5py.File(temp_dir.joinpath("dataset_part2.h5"), "w") as file:
         grp = file.create_group("entry").create_group("data")
-        grp.create_dataset("data_2", data=rng.integers(-10, 10, size=(5, 13, 17)), dtype="<i8")
+        grp.create_dataset(
+            "data_2", data=rng.integers(-10, 10, size=(5, 13, 17)), dtype="<i8"
+        )
 
     # Create a sequence of tiff files
     (temp_dir / "tiff_files").mkdir(parents=True, exist_ok=True)
@@ -83,7 +91,7 @@ def external_assets_folder(tmp_path_factory):
         data = rng.integers(0, 255, size=(1, 10, 15), dtype="uint8")
         tf.imwrite(temp_dir.joinpath("tiff_files", f"img_{i:05}.tif"), data)
 
-    yield str(temp_dir.absolute()).replace("\\", "/")
+    return str(temp_dir.absolute()).replace("\\", "/")
 
 
 def render_templated_documents(fname: str, data_dir: str):
@@ -109,18 +117,26 @@ class Named(HasName):
 class StreamDatumReadableCollectable(Named, Readable, Collectable, WritesStreamAssets):
     """Produces no events, but only StreamResources/StreamDatums and can be read or collected"""
 
-    def _get_hdf5_stream(self, data_key: str, index: int) -> tuple[Optional[StreamResource], StreamDatum]:
+    def _get_hdf5_stream(
+        self, data_key: str, index: int
+    ) -> tuple[StreamResource | None, StreamDatum]:
         file_path = os.path.join(self.root, "dataset.h5")
         uid = f"{data_key}-uid"
-        data_desc = self.describe()[data_key]  # Descriptor dictionary for the current data key
-        data_shape = cast(tuple[int, ...], tuple(data_desc["shape"]))
+        data_desc = self.describe()[
+            data_key
+        ]  # Descriptor dictionary for the current data key
+        data_shape = cast("tuple[int, ...]", tuple(data_desc["shape"]))
         hdf5_dataset = f"/{data_key}/VALUE"
 
         stream_resource = None
         if self.counter == 0:
             # Backward compatibility test, ignore typing errors
             stream_resource = StreamResource(  # type: ignore[typeddict-unknown-key]
-                parameters={"dataset": hdf5_dataset, "chunk_shape": (100, *data_shape[1:]), "_validate": True},
+                parameters={
+                    "dataset": hdf5_dataset,
+                    "chunk_shape": (100, *data_shape[1:]),
+                    "_validate": True,
+                },
                 data_key=data_key,
                 root=self.root,
                 resource_path="/dataset.h5",
@@ -145,25 +161,32 @@ class StreamDatumReadableCollectable(Named, Readable, Collectable, WritesStreamA
             descriptor="",
             uid=f"{uid}/{self.counter}",
             indices={"start": indx_min, "stop": indx_max},
-            seq_nums={"start": 0, "stop": 0},  # seq_nums will be overwritten by RunBundler
+            seq_nums={
+                "start": 0,
+                "stop": 0,
+            },  # seq_nums will be overwritten by RunBundler
         )
 
         # Write (append to) the hdf5 dataset
         with h5py.File(file_path, "a") as f:
             dset = f[hdf5_dataset]
             dset.resize([indx_max * data_shape[0], *data_shape[1:]])
-            dset[indx_min * data_shape[0] : indx_max * data_shape[0], ...] = np.random.randn(  # noqa: E203
-                (indx_max - indx_min) * data_shape[0], *data_shape[1:]
+            dset[indx_min * data_shape[0] : indx_max * data_shape[0], ...] = (
+                np.random.randn((indx_max - indx_min) * data_shape[0], *data_shape[1:])
             )
 
         return stream_resource, stream_datum
 
-    def _get_tiff_stream(self, data_key: str, index: int) -> tuple[Optional[StreamResource], StreamDatum]:
+    def _get_tiff_stream(
+        self, data_key: str, index: int
+    ) -> tuple[StreamResource | None, StreamDatum]:
         file_path = self.root
         for data_key in [f"{self.name}-sd3"]:
             uid = f"{data_key}-uid"
-            data_desc = self.describe()[data_key]  # Descriptor dictionary for the current data key
-            data_shape = cast(tuple[int, ...], tuple(data_desc["shape"]))
+            data_desc = self.describe()[
+                data_key
+            ]  # Descriptor dictionary for the current data key
+            data_shape = cast("tuple[int, ...]", tuple(data_desc["shape"]))
             stream_resource = None
             if self.counter == 0:
                 # Backward compatibility test, ignore typing errors
@@ -188,7 +211,10 @@ class StreamDatumReadableCollectable(Named, Readable, Collectable, WritesStreamA
                 descriptor="",
                 uid=f"{uid}/{self.counter}",
                 indices={"start": indx_min, "stop": indx_max},
-                seq_nums={"start": 0, "stop": 0},  # seq_nums will be overwritten by RunBundler
+                seq_nums={
+                    "start": 0,
+                    "stop": 0,
+                },  # seq_nums will be overwritten by RunBundler
             )
 
             # Write a tiff file
@@ -228,10 +254,10 @@ class StreamDatumReadableCollectable(Named, Readable, Collectable, WritesStreamA
             ),
         }
 
-    def describe_collect(self) -> Union[dict[str, DataKey], dict[str, dict[str, DataKey]]]:
+    def describe_collect(self) -> dict[str, DataKey] | dict[str, dict[str, DataKey]]:
         return self.describe()
 
-    def collect_asset_docs(self, index: Optional[int] = None) -> Iterator[StreamAsset]:
+    def collect_asset_docs(self, index: int | None = None) -> Iterator[StreamAsset]:
         """Produce a StreamResource and StreamDatum for all data keys for 0:index"""
         index = index or 1
         data_keys_methods = {
@@ -337,7 +363,9 @@ def test_stream_datum_collectable(RE, client, tmp_path):
 @pytest.mark.parametrize("frames_per_event", [1, 5, 10])
 def test_handling_non_stream_resource(RE, client, tmp_path, frames_per_event):
     det = SynSignalWithRegistry(
-        func=lambda: np.random.randint(0, 255, (frames_per_event, 10, 15), dtype="uint8"),
+        func=lambda: np.random.randint(
+            0, 255, (frames_per_event, 10, 15), dtype="uint8"
+        ),
         dtype_numpy=np.dtype("uint8").str,
         name="img",
         labels={"detectors"},
@@ -364,7 +392,9 @@ def collect_plan(*objs, name="primary"):
     yield from bps.close_run()
 
 
-@pytest.mark.parametrize("fname", ["internal_events", "external_assets", "external_assets_legacy"])
+@pytest.mark.parametrize(
+    "fname", ["internal_events", "external_assets", "external_assets_legacy"]
+)
 @pytest.mark.parametrize("batch_size", [0, 1, 1000, None])
 def test_with_correct_sample_runs(client, batch_size, external_assets_folder, fname):
     if batch_size is None:
@@ -385,7 +415,9 @@ def test_with_correct_sample_runs(client, batch_size, external_assets_folder, fn
 def test_dims_names(client, external_assets_folder):
     tw = TiledWriter(client)
 
-    for item in render_templated_documents("external_assets.json", external_assets_folder):
+    for item in render_templated_documents(
+        "external_assets.json", external_assets_folder
+    ):
         if item["name"] == "start":
             uid = item["doc"]["uid"]
         tw(**item)
@@ -401,12 +433,18 @@ def test_dims_names(client, external_assets_folder):
     [(1, (1, 1, 1), (0, 1, 2)), (2, (2, 1), (0, 2)), (5, (3,), (0,))],
 )
 def test_data_source_patching(
-    client, batch_size, expected_patch_shapes, expected_patch_offsets, external_assets_folder
+    client,
+    batch_size,
+    expected_patch_shapes,
+    expected_patch_offsets,
+    external_assets_folder,
 ):
     tw = TiledWriter(client, batch_size=batch_size)
 
     with record_history() as history:
-        for item in render_templated_documents("external_assets.json", external_assets_folder):
+        for item in render_templated_documents(
+            "external_assets.json", external_assets_folder
+        ):
             tw(**item)
 
     def parse_data_source_uri(uri: str):
@@ -435,13 +473,21 @@ def test_data_source_patching(
     ]
 
     # Check that each data key received the expected number of updates
-    assert len(put_uri_params) == 3 * len(expected_patch_shapes)  # 3 data keys in the example
-    for data_key in {"det-key1", "det-key2", "det-key3"}:
-        assert len([uri for dk, uri in put_uri_params if dk == data_key]) == len(expected_patch_shapes)
+    assert len(put_uri_params) == 3 * len(
+        expected_patch_shapes
+    )  # 3 data keys in the example
+    for data_key in ("det-key1", "det-key2", "det-key3"):
+        assert len([uri for dk, uri in put_uri_params if dk == data_key]) == len(
+            expected_patch_shapes
+        )
 
         # Check that the patch sizes and offsets (leftmost dimensions) match expectations
-        actual_patch_sizes = tuple(params["patch_shape"][0] for dk, params in put_uri_params if dk == data_key)
-        actual_patch_offsets = tuple(params["patch_offset"][0] for dk, params in put_uri_params if dk == data_key)
+        actual_patch_sizes = tuple(
+            params["patch_shape"][0] for dk, params in put_uri_params if dk == data_key
+        )
+        actual_patch_offsets = tuple(
+            params["patch_offset"][0] for dk, params in put_uri_params if dk == data_key
+        )
         assert actual_patch_sizes == expected_patch_shapes
         assert actual_patch_offsets == expected_patch_offsets
 
@@ -451,7 +497,9 @@ def test_data_source_patching(
 def test_validate_external_data(client, external_assets_folder, error_type, validate):
     tw = TiledWriter(client)
 
-    documents = render_templated_documents("external_assets_single_key.json", external_assets_folder)
+    documents = render_templated_documents(
+        "external_assets_single_key.json", external_assets_folder
+    )
     for item in documents:
         name, doc = item["name"], item["doc"]
         if name == "start":
@@ -463,7 +511,9 @@ def test_validate_external_data(client, external_assets_folder, error_type, vali
         elif (error_type == "chunks") and name in {"resource", "stream_resource"}:
             doc["parameters"]["chunk_shape"] = [1, 2, 3]  # should be [100, 13, 17]
         elif (error_type == "dtype") and (name == "descriptor"):
-            doc["data_keys"]["det-key2"]["dtype_numpy"] = np.dtype("int32").str  # should be "int64"
+            doc["data_keys"]["det-key2"]["dtype_numpy"] = np.dtype(
+                "int32"
+            ).str  # should be "int64"
 
         # Add flag to trigger validation
         if name in {"resource", "stream_resource"} and validate:
@@ -490,7 +540,9 @@ def test_validate_external_data(client, external_assets_folder, error_type, vali
 def test_slice_and_squeeze(client, external_assets_folder, squeeze):
     tw = TiledWriter(client)
 
-    documents = render_templated_documents("external_assets_single_key.json", external_assets_folder)
+    documents = render_templated_documents(
+        "external_assets_single_key.json", external_assets_folder
+    )
     for item in documents:
         name, doc = item["name"], item["doc"]
         if name == "start":
@@ -513,7 +565,9 @@ def test_slice_and_squeeze(client, external_assets_folder, squeeze):
 def test_legacy_multiplier_parameter(client, external_assets_folder):
     tw = TiledWriter(client)
 
-    documents = render_templated_documents("external_assets_single_key.json", external_assets_folder)
+    documents = render_templated_documents(
+        "external_assets_single_key.json", external_assets_folder
+    )
     for item in documents:
         name, doc = item["name"], item["doc"]
         if name == "start":
@@ -534,7 +588,9 @@ def test_legacy_multiplier_parameter(client, external_assets_folder):
 def test_streams_with_no_events(client, external_assets_folder):
     tw = TiledWriter(client)
 
-    for item in render_templated_documents("external_assets_single_key.json", external_assets_folder):
+    for item in render_templated_documents(
+        "external_assets_single_key.json", external_assets_folder
+    ):
         name, doc = item["name"], item["doc"]
         if name == "start":
             uid = doc["uid"]
@@ -552,7 +608,9 @@ def test_streams_with_no_events(client, external_assets_folder):
 
 
 @pytest.mark.parametrize("include_data_sources", [True, False])
-@pytest.mark.parametrize("fname", ["internal_events", "external_assets", "external_assets_legacy"])
+@pytest.mark.parametrize(
+    "fname", ["internal_events", "external_assets", "external_assets_legacy"]
+)
 def test_zero_gets(client, external_assets_folder, fname, include_data_sources):
     client = client.new_variation(include_data_sources=include_data_sources)
     assert client._include_data_sources == include_data_sources
@@ -576,7 +634,9 @@ def test_bad_document_order(client, external_assets_folder):
     tw = TiledWriter(client)
 
     document_cache = []
-    for item in render_templated_documents("external_assets_legacy.json", external_assets_folder):
+    for item in render_templated_documents(
+        "external_assets_legacy.json", external_assets_folder
+    ):
         name, doc = item["name"], item["doc"]
         if name == "start":
             uid = doc["uid"]
@@ -597,14 +657,18 @@ def test_bad_document_order(client, external_assets_folder):
         assert stream.read() is not None
         assert "time" in stream.keys()
         assert "seq_num" in stream.keys()
-        assert len(stream.keys()) > 2  # There's at least one data key in addition to time and seq_num
+        assert (
+            len(stream.keys()) > 2
+        )  # There's at least one data key in addition to time and seq_num
 
 
 def test_json_backup(client, tmpdir, monkeypatch):
     def patched_event(name, doc):
         raise RuntimeError("This is a test error to check the backup functionality")
 
-    monkeypatch.setattr("bluesky_tiled_plugins.writing.tiled_writer._RunWriter.event", patched_event)
+    monkeypatch.setattr(
+        "bluesky_tiled_plugins.writing.tiled_writer._RunWriter.event", patched_event
+    )
 
     tw = TiledWriter(client, backup_directory=str(tmpdir))
 
@@ -616,7 +680,9 @@ def test_json_backup(client, tmpdir, monkeypatch):
 
     run = client[uid]
 
-    assert "primary" in run  # The Descriptor was processed and the primary stream was created
+    assert (
+        "primary" in run
+    )  # The Descriptor was processed and the primary stream was created
     assert run["primary"].read() is not None  # The stream can be read
     assert len(run["primary"].read()) == 0  # No events were processed due to the error
     assert "stop" in run.metadata  # The TiledWriter did not crash
@@ -634,7 +700,8 @@ def test_json_backup(client, tmpdir, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "max_array_size, expected_scheme", [(0, "file"), (4, "file"), (16, "duckdb"), (-1, "duckdb")]
+    "max_array_size, expected_scheme",
+    [(0, "file"), (4, "file"), (16, "duckdb"), (-1, "duckdb")],
 )
 def test_internal_arrays_written_as_zarr(client, max_array_size, expected_scheme):
     tw = TiledWriter(client, max_array_size=max_array_size)
@@ -653,12 +720,21 @@ def test_internal_arrays_written_as_zarr(client, max_array_size, expected_scheme
     # There's a table and it is stored in the SQL database
     internal_table = run["primary"].base["internal"]
     assert internal_table.read() is not None
-    assert urlparse(internal_table.data_sources()[0].assets[0].data_uri).scheme == "duckdb"
+    assert (
+        urlparse(internal_table.data_sources()[0].assets[0].data_uri).scheme == "duckdb"
+    )
 
     if expected_scheme == "file":
-        assert "long" in run["primary"].base  # There's a separate node for the array data
-        assert "long" not in internal_table.columns  # The internal table does not have a column for it
-        assert urlparse(run["primary"]["long"].data_sources()[0].assets[0].data_uri).scheme == "file"
+        assert (
+            "long" in run["primary"].base
+        )  # There's a separate node for the array data
+        assert (
+            "long" not in internal_table.columns
+        )  # The internal table does not have a column for it
+        assert (
+            urlparse(run["primary"]["long"].data_sources()[0].assets[0].data_uri).scheme
+            == "file"
+        )
     else:
         assert "long" not in run["primary"].base
         assert "long" in internal_table.columns

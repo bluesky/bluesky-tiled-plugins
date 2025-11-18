@@ -17,7 +17,6 @@ to support older clients querying against MongoDB-backed servers.
 import enum
 import warnings
 from dataclasses import asdict, dataclass
-from typing import Optional
 
 # Not all of these are used, but import them all
 # for user convenience so everything can be imported from bluesky_tiled_plugins.queries
@@ -269,8 +268,8 @@ class TimeRange:
     """
 
     timezone: str
-    since: Optional[float] = None
-    until: Optional[float] = None
+    since: float | None = None
+    until: float | None = None
 
     def __init__(self, *, timezone=None, since=None, until=None):
         # Stash the raw values just for use in the repr.

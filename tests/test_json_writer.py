@@ -2,6 +2,7 @@ import json
 import os
 
 import pytest
+
 from bluesky_tiled_plugins.writing._json_writer import JSONLinesWriter, JSONWriter
 
 
@@ -15,7 +16,9 @@ def read_jsonl_file(path):
         return [json.loads(line) for line in f if line.strip()]
 
 
-@pytest.mark.parametrize("writer_class, extension", [(JSONWriter, "json"), (JSONLinesWriter, "jsonl")])
+@pytest.mark.parametrize(
+    "writer_class, extension", [(JSONWriter, "json"), (JSONLinesWriter, "jsonl")]
+)
 def test_json_writer(tmpdir, writer_class, extension):
     writer = writer_class(tmpdir)
     start_doc = {"uid": "abc", "value": 1}
@@ -28,13 +31,19 @@ def test_json_writer(tmpdir, writer_class, extension):
 
     # Read the file and check its contents
     filename = os.path.join(tmpdir, f"abc.{extension}")
-    data = read_json_file(filename) if (writer_class == JSONWriter) else read_jsonl_file(filename)
+    data = (
+        read_json_file(filename)
+        if (writer_class == JSONWriter)
+        else read_jsonl_file(filename)
+    )
     assert data[0]["name"] == "start"
     assert data[1]["name"] == "event"
     assert data[2]["name"] == "stop"
 
 
-@pytest.mark.parametrize("writer_class, extension", [(JSONWriter, "json"), (JSONLinesWriter, "jsonl")])
+@pytest.mark.parametrize(
+    "writer_class, extension", [(JSONWriter, "json"), (JSONLinesWriter, "jsonl")]
+)
 def test_custom_filename(tmpdir, writer_class, extension):
     writer = writer_class(tmpdir, filename=f"custom.{extension}")
     doc = {"uid": "value"}

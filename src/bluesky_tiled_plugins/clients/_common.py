@@ -3,4 +3,7 @@
 # resulting in an unnecessary network hit just to raise
 # AttributeError.
 
-IPYTHON_METHODS = {"_ipython_canary_method_should_not_exist_", "_repr_mimebundle__ipython_display_"}
+IPYTHON_METHODS = {
+    "_ipython_canary_method_should_not_exist_",
+    "_repr_mimebundle__ipython_display_",
+}

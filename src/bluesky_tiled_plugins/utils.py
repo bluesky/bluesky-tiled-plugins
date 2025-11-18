@@ -10,11 +10,19 @@ def truncate_json_overflow(data):
     """
     if isinstance(data, collections.abc.Mapping):
         return {k: truncate_json_overflow(v) for k, v in data.items()}
-    elif isinstance(data, collections.abc.Iterable) and not isinstance(data, str):
+    if isinstance(data, collections.abc.Iterable) and not isinstance(data, str):
         # Handle lists, tuples, arrays, etc., but not strings
         return [truncate_json_overflow(item) for item in data]
-    elif isinstance(data, (int, float)) and not (data % 1) and not (1 - 2**53 <= data <= 2**53 - 1):
-        return min(max(data, 1 - 2**53), 2**53 - 1)  # Truncate integers to fit in JSON (53 bits max)
-    elif isinstance(data, float) and (data < -1.7976e308 or data > 1.7976e308):
-        return min(max(data, -1.7976e308), 1.7976e308)  # (Approx.) truncate floats to fit in JSON to avoid inf
+    if (
+        isinstance(data, (int, float))
+        and not (data % 1)
+        and not (1 - 2**53 <= data <= 2**53 - 1)
+    ):
+        return min(
+            max(data, 1 - 2**53), 2**53 - 1
+        )  # Truncate integers to fit in JSON (53 bits max)
+    if isinstance(data, float) and (data < -1.7976e308 or data > 1.7976e308):
+        return min(
+            max(data, -1.7976e308), 1.7976e308
+        )  # (Approx.) truncate floats to fit in JSON to avoid inf
     return data

@@ -37,7 +37,10 @@ class CatalogOfBlueskyRuns(Container):
         # with some modifications to extract scan_id from the metadata.
         sample = self.items()[:10]
         # Use scan_id (int) if defined; otherwise fall back to uid.
-        sample_reprs = [repr(value.metadata.get("start", {}).get("scan_id", key)) for key, value in sample]
+        sample_reprs = [
+            repr(value.metadata.get("start", {}).get("scan_id", key))
+            for key, value in sample
+        ]
         out = "<Catalog {"
         # Always show at least one.
         if sample_reprs:
@@ -71,7 +74,9 @@ class CatalogOfBlueskyRuns(Container):
     def v2(self):
         structure_clients = copy.copy(self.structure_clients)
         structure_clients.set("BlueskyRun", lambda: BlueskyRunV2)
-        return CatalogOfBlueskyRuns(self.context, item=self.item, structure_clients=structure_clients)
+        return CatalogOfBlueskyRuns(
+            self.context, item=self.item, structure_clients=structure_clients
+        )
 
     @property
     def v3(self):
@@ -80,7 +85,9 @@ class CatalogOfBlueskyRuns(Container):
 
         structure_clients = copy.copy(self.structure_clients)
         structure_clients.set("BlueskyRun", lambda: BlueskyRunV3)
-        return CatalogOfBlueskyRuns(self.context, item=self.item, structure_clients=structure_clients)
+        return CatalogOfBlueskyRuns(
+            self.context, item=self.item, structure_clients=structure_clients
+        )
 
     @functools.cached_property
     def is_sql(self):
@@ -103,16 +110,15 @@ class CatalogOfBlueskyRuns(Container):
                     # Fall back to partial uid lookup below.
                     pass
             return self._lookup_by_partial_uid(key)
-        elif isinstance(key, numbers.Integral):
+        if isinstance(key, numbers.Integral):
             if key > 0:
                 # CASE 2: Interpret key as a scan_id.
                 return self._lookup_by_scan_id(int(key))
-            else:
-                # CASE 3: Interpret key as a recently lookup, as in
-                # `catalog[-1]` is the latest entry.
-                key = int(key)
-                return self.values()[key]
-        elif isinstance(key, slice):
+            # CASE 3: Interpret key as a recently lookup, as in
+            # `catalog[-1]` is the latest entry.
+            key = int(key)
+            return self.values()[key]
+        if isinstance(key, slice):
             if (key.start is None) or (key.start >= 0):
                 raise ValueError(
                     "For backward-compatibility reasons, slicing here "
@@ -120,24 +126,26 @@ class CatalogOfBlueskyRuns(Container):
                     "Use .values() to slice how you please."
                 )
             return self.values()[key]
-        elif isinstance(key, collections.abc.Iterable):
+        if isinstance(key, collections.abc.Iterable):
             # We know that isn't a str because we check that above.
             # Recurse.
             return [self[item] for item in key]
-        else:
-            raise ValueError("Indexing expects a string, an integer, or a collection of strings and/or integers.")
+        raise ValueError(
+            "Indexing expects a string, an integer, or a collection of strings and/or integers."
+        )
 
     def _lookup_by_scan_id(self, scan_id):
         results = self.search(Eq("start.scan_id", scan_id))
         if not results:
             raise KeyError(f"No match for scan_id={scan_id}")
-        else:
-            # Return latest match.
-            return results.values().last()
+        # Return latest match.
+        return results.values().last()
 
     def _lookup_by_partial_uid(self, partial_uid):
         if len(partial_uid) < 5:
-            raise ValueError(f"Partial uid {partial_uid!r} is too short. It must include at least 5 characters.")
+            raise ValueError(
+                f"Partial uid {partial_uid!r} is too short. It must include at least 5 characters."
+            )
         if self.is_sql:
             query = Like("start.uid", f"{partial_uid}%")
         else:
@@ -169,20 +177,28 @@ class CatalogOfBlueskyRuns(Container):
         if isinstance(query, TimeRange):
             result = self
             if query.since:
-                result = Container.search(result, Comparison("ge", "start.time", query.since))
+                result = Container.search(
+                    result, Comparison("ge", "start.time", query.since)
+                )
             if query.until:
-                result = Container.search(result, Comparison("lt", "start.time", query.until))
+                result = Container.search(
+                    result, Comparison("lt", "start.time", query.until)
+                )
         # For backward-compatiblity, accept a dict and interpret it as a Mongo
         # query against the 'start' documents.
         elif isinstance(query, _ScanID):
             if len(query.scan_ids) > 1:
-                raise ValueError("Search on multiple ScanIDs in one query is no longer supported.")
+                raise ValueError(
+                    "Search on multiple ScanIDs in one query is no longer supported."
+                )
             (scan_id,) = query.scan_ids
             query = Eq("start.scan_id", int(scan_id))
             result = super().search(query)
         elif isinstance(query, _PartialUID):
             if len(query.partial_uids) > 1:
-                raise ValueError("Search on multiple PartialUIDs in one query is no longer supported.")
+                raise ValueError(
+                    "Search on multiple PartialUIDs in one query is no longer supported."
+                )
             (partial_uid,) = query.partial_uids
             if self.is_sql:
                 query = Like("start.uid", f"{partial_uid}%")
@@ -207,7 +223,9 @@ class CatalogOfBlueskyRuns(Container):
 
     def post_document(self, name, doc):
         link = self.item["links"]["self"].replace("/metadata", "/documents", 1)
-        response = self.context.http_client.post(link, content=safe_json_dump({"name": name, "doc": doc}))
+        response = self.context.http_client.post(
+            link, content=safe_json_dump({"name": name, "doc": doc})
+        )
         handle_error(response)
 
 

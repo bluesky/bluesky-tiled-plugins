@@ -336,7 +336,7 @@ class _BoundMethodProxy:
         """
         if self.inst is not None and self.inst() is None:
             raise ReferenceError
-        elif self.inst is not None:
+        if self.inst is not None:
             # build a new instance method with a strong reference to the
             # instance
 
@@ -356,8 +356,7 @@ class _BoundMethodProxy:
         try:
             if self.inst is None:
                 return self.func == other.func and other.inst is None
-            else:
-                return self.func == other.func and self.inst() == other.inst()
+            return self.func == other.func and self.inst() == other.inst()
         except Exception:
             return False
 

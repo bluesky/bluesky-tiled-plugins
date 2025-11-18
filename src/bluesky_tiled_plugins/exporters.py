@@ -47,7 +47,9 @@ async def json_seq_exporter(mimetype, adapter, metadata, filter_for_access):
     for desc_name in stream_names:
         desc_node = await adapter.lookup_adapter([desc_name])
         desc_meta = desc_node.metadata()
-        part_names = set(await desc_node.keys_range(offset=0, limit=None))  # Composite parts
+        part_names = set(
+            await desc_node.keys_range(offset=0, limit=None)
+        )  # Composite parts
 
         # First (or the only) descriptor
         desc_doc = {k: v for k, v in desc_meta.items() if k not in {"_config_updates"}}
@@ -71,7 +73,9 @@ async def json_seq_exporter(mimetype, adapter, metadata, filter_for_access):
                 # This assumes that that the full configuration was present in the first descriptor
                 for key in obj["data"].keys():
                     desc_doc["configuration"][obj_name]["data"][key] = obj["data"][key]
-                    desc_doc["configuration"][obj_name]["timestamps"][key] = obj["timestamps"][key]
+                    desc_doc["configuration"][obj_name]["timestamps"][key] = obj[
+                        "timestamps"
+                    ][key]
 
             result.append({"name": "descriptor", "doc": desc_doc})
 
@@ -79,16 +83,27 @@ async def json_seq_exporter(mimetype, adapter, metadata, filter_for_access):
         if "internal" in part_names:
             internal_node = await desc_node.lookup_adapter(["internal"])
             df = await internal_node.read()
-            keys = [k for k in df.columns if k not in {"seq_num", "time"} and not k.startswith("ts_")]
+            keys = [
+                k
+                for k in df.columns
+                if k not in {"seq_num", "time"} and not k.startswith("ts_")
+            ]
             for row in df.to_dict(orient="records"):
-                desc_uid = desc_time_uids[0]["uid"]  # same as desc_node.metadata()["uid"] if no updates
+                desc_uid = desc_time_uids[0][
+                    "uid"
+                ]  # same as desc_node.metadata()["uid"] if no updates
                 for _desc_uid_time in desc_time_uids[1:]:
                     if _desc_uid_time["time"] <= row["time"]:
                         desc_uid = _desc_uid_time["uid"]
                 event_doc = {"seq_num": row["seq_num"], "time": row["time"]}
-                event_doc["uid"] = f"event-{desc_uid}-{row['seq_num']}"  # can be anything (unique)
+                event_doc["uid"] = (
+                    f"event-{desc_uid}-{row['seq_num']}"  # can be anything (unique)
+                )
                 event_doc["descriptor"] = desc_uid
-                event_doc["data"] = {k: row[k].tolist() if hasattr(row[k], "__array__") else row[k] for k in keys}
+                event_doc["data"] = {
+                    k: row[k].tolist() if hasattr(row[k], "__array__") else row[k]
+                    for k in keys
+                }
                 event_doc["timestamps"] = {k: row[f"ts_{k}"] for k in keys}
                 result.append({"name": "event", "doc": event_doc})
 
