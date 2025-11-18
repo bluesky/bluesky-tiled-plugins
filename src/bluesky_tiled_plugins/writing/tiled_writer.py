@@ -5,7 +5,6 @@ from collections import defaultdict, deque, namedtuple
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
-from warnings import warn
 
 import numpy
 import pyarrow
@@ -101,6 +100,12 @@ MIMETYPE_LOOKUP = defaultdict(
 )
 
 logger = logging.getLogger(__name__)
+
+
+class ValidationError(Exception):
+    """Custom exception for validation errors in Tiled RunWriter."""
+
+    pass
 
 
 def concatenate_stream_datums(*docs: StreamDatum):
@@ -781,8 +786,7 @@ class _RunWriter(DocumentRouter):
                         + str(e).replace("\n", " ").replace("\r", "").strip()
                     )
                     msg = title + f" failed with error: {msg}"
-                    warn(msg, stacklevel=2)
-                    notes.append(msg)
+                    raise ValidationError(msg) from e
                 self._update_data_source_for_node(
                     sres_node, consolidator.get_data_source()
                 )
