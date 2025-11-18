@@ -135,7 +135,6 @@ class StreamDatumReadableCollectable(Named, Readable, Collectable, WritesStreamA
                 parameters={
                     "dataset": hdf5_dataset,
                     "chunk_shape": (100, *data_shape[1:]),
-                    "_validate": True,
                 },
                 data_key=data_key,
                 root=self.root,
@@ -195,7 +194,6 @@ class StreamDatumReadableCollectable(Named, Readable, Collectable, WritesStreamA
                         "chunk_shape": (1, *data_shape),
                         "template": "{:05d}.tif",
                         "join_method": "stack",
-                        "_validate": True,
                     },
                     data_key=data_key,
                     root=self.root,
@@ -299,7 +297,6 @@ class SynSignalWithRegistry(ophyd.sim.SynSignalWithRegistry):
             "chunk_shape": (1,),
             "template": "_{:d}." + self.save_ext,
             "join_method": "stack",
-            "_validate": True,
         }
         self._asset_docs_cache[-1][1]["resource_kwargs"].update(parameters)
 
@@ -495,7 +492,7 @@ def test_data_source_patching(
 @pytest.mark.parametrize("error_type", ["shape", "chunks", "dtype"])
 @pytest.mark.parametrize("validate", [True, False])
 def test_validate_external_data(client, external_assets_folder, error_type, validate):
-    tw = TiledWriter(client)
+    tw = TiledWriter(client, validate=validate)
 
     documents = render_templated_documents(
         "external_assets_single_key.json", external_assets_folder
@@ -514,10 +511,6 @@ def test_validate_external_data(client, external_assets_folder, error_type, vali
             doc["data_keys"]["det-key2"]["dtype_numpy"] = np.dtype(
                 "int32"
             ).str  # should be "int64"
-
-        # Add flag to trigger validation
-        if name in {"resource", "stream_resource"} and validate:
-            doc["parameters"]["_validate"] = True
 
         # Check that the warning is issued when data changes during the validation
         if name == "stop" and validate:
