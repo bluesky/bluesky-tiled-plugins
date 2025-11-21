@@ -1,21 +1,37 @@
 from __future__ import annotations
 
 import importlib.metadata
+from pathlib import Path
+from subprocess import check_output
 from typing import Any
 
 project = "bluesky-tiled-plugins"
-copyright = "2025, Bluesky Collaboration"
+copyright = "Bluesky Collaboration"
 author = "Bluesky Collaboration"
-version = release = importlib.metadata.version("bluesky_tiled_plugins")
+github_user = "bluesky"
+
+# The full version, including alpha/beta/rc tags.
+release = importlib.metadata.version("bluesky_tiled_plugins")
+
+# The short X.Y version.
+if "+" in release:
+    # Not on a tag, use branch name
+    root = Path(__file__).absolute().parent.parent
+    git_branch = check_output("git branch --show-current".split(), cwd=root)
+    version = release = git_branch.decode().strip()
+else:
+    version = release
 
 extensions = [
+    "autodoc2",
     "myst_parser",
+    "numpydoc",
     "sphinx.ext.autodoc",
     "sphinx.ext.intersphinx",
     "sphinx.ext.mathjax",
-    "sphinx.ext.napoleon",
-    "sphinx_autodoc_typehints",
+    "sphinxcontrib.mermaid",
     "sphinx_copybutton",
+    "sphinx_design",
 ]
 
 source_suffix = [".rst", ".md"]
@@ -28,24 +44,29 @@ exclude_patterns = [
     ".venv",
 ]
 
-html_theme = "furo"
-
+html_theme = "pydata_sphinx_theme"
+html_logo = "_static/logo.svg"
 html_theme_options: dict[str, Any] = {
-    "footer_icons": [
+    "github_url": f"https://github.com/{github_user}/{project}",
+    "external_links": [
         {
-            "name": "GitHub",
-            "url": "https://github.com/bluesky/bluesky-tiled-plugins",
-            "html": """
-                <svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 16 16">
-                    <path fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"></path>
-                </svg>
-            """,
-            "class": "",
+            "name": "Bluesky Project",
+            "url": "https://blueskyproject.io",
         },
     ],
-    "source_repository": "https://github.com/bluesky/bluesky-tiled-plugins",
-    "source_branch": "main",
-    "source_directory": "docs/",
+    "icon_links": [
+        {
+            "name": "PyPI",
+            "url": f"https://pypi.org/project/{project}",
+            "icon": "fas fa-cube",
+        },
+    ],
+}
+html_context = {
+    "github_user": github_user,
+    "github_repo": project,
+    "github_version": version,
+    "doc_path": "docs",
 }
 
 myst_enable_extensions = [
@@ -62,3 +83,32 @@ nitpick_ignore = [
 ]
 
 always_document_param_types = True
+
+# If true, "Created using Sphinx" is shown in the HTML footer. Default is True.
+html_show_sphinx = False
+
+# If true, "(C) Copyright ..." is shown in the HTML footer. Default is True.
+html_show_copyright = False
+
+# Set copy-button to ignore python and bash prompts
+# https://sphinx-copybutton.readthedocs.io/en/latest/use.html#using-regexp-prompt-identifiers
+copybutton_prompt_text = r">>> |\.\.\. |\$ |In \[\d*\]: | {2,5}\.\.\.: | {5,8}: "
+copybutton_prompt_is_regexp = True
+
+# Which package to load and document
+autodoc2_packages = [{"path": "../src/bluesky_tiled_plugins", "auto_mode": True}]
+
+# Put them in docs/_api which is git ignored
+autodoc2_output_dir = "_api"
+
+# Don't document private things
+autodoc2_hidden_objects = {"private", "dunder", "inherited"}
+
+# We don't have any docstring for __init__, so by separating
+# them here we don't get the "Initilize" text that would otherwise be added
+autodoc2_class_docstring = "both"
+
+# Which objects to include docstrings for. ‘direct’ means only from objects
+# that are not inherited.
+autodoc2_docstrings = "all"
+
