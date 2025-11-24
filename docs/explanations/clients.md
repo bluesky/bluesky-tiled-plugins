@@ -1,3 +1,5 @@
+(custom-clients)=
+
 # Custom Tiled Clients
 
 ## All You Need To Know
@@ -21,7 +23,7 @@ information:
 <Container {'baseline', 'primary'}>
 ```
 
-There are also convenience methods like:
+There are also convenience properties like:
 
 ```
 run.start  # alias for run.metadata["start"]
