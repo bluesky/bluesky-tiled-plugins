@@ -17,8 +17,8 @@ with [Bluesky][].
   `ScanID` and `TimeRange`
 - Classes that **extend the Tiled Python client** to display Bluesky-specific
   metadata and provide Bluesky-specific convenience methods
-- A Tiled exporter that **"replays" Bluesky documents** reconstructed saved data
-  and metadata
+- A Tiled exporter that **"replays" Bluesky documents** reconstructed from saved
+  data and metadata
 
 Documentation is split into [four categories](https://diataxis.fr), also
 accessible from links in the top bar.

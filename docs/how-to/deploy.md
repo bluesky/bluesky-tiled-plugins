@@ -2,10 +2,11 @@
 
 # Deploy Tiled for Bluesky
 
-## In process
+## Embedded
 
 For "first steps", tutorials, and "embedded" deployments, the
-`SimpleTiledServer` is a good solution. It deploys Tiled on a background thread.
+`SimpleTiledServer` is a good solution. It runs a Tiled server on a background
+thread.
 
 ```python
 from tiled.server import SimpleTiledServer
@@ -20,7 +21,17 @@ By default, it uses temporary storage. Pass a directory, e.g.
 Additionally, if the server needs access to any detector-written files, pass
 `SimpleTiledServer(readable_storage=["path/to/detector/data"])`
 
+```{note}
+
+The `SimpleTiledService` does not currently support Tiled's streaming Websockets
+API, but support is planned in a future release of Tiled.
+
+```
+
 ## Single-process
+
+Compared to an embedded deployment, this approach isolates the data access load
+to a separate process. It also provides more flexibility.
 
 ### Quickstart
 
@@ -28,7 +39,7 @@ Launch Tiled with temporary storage. Optionally set a deterministic API key (the
 default is random each time you start the server).
 
 And, as above, if the server needs access to any detector-written files, pass
-`-r ...`.
+the option `-r ...`. (You can pass `-r ...` multiple times.)
 
 ```sh
 tiled serve catalog --temp  [--api-key secret] [-r path/to/detector/data]
