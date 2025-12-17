@@ -62,43 +62,41 @@
       "uid": "det-key2-uid/0",
       "indices": {
         "start": 0,
-        "stop": 1
-      },
-      "seq_nums": {
-        "start": 1,
-        "stop": 2
-      }
-    }
-  },
-  {
-    "name": "stream_datum",
-    "doc": {
-      "stream_resource": "det-key2-uid",
-      "descriptor": "{{ uuid }}-8c00740d9771",
-      "uid": "det-key2-uid/1",
-      "indices": {
-        "start": 1,
-        "stop": 2
-      },
-      "seq_nums": {
-        "start": 2,
-        "stop": 3
-      }
-    }
-  },
-  {
-    "name": "stream_datum",
-    "doc": {
-      "stream_resource": "det-key2-uid",
-      "descriptor": "{{ uuid }}-8c00740d9771",
-      "uid": "det-key2-uid/2",
-      "indices": {
-        "start": 2,
         "stop": 3
       },
       "seq_nums": {
-        "start": 3,
+        "start": 1,
         "stop": 4
+      }
+    }
+  },
+  {
+    "name": "stream_resource",
+    "doc": {
+      "parameters": {
+        "dataset": "/entry/data/data_2",
+        "chunk_shape": [100, 13, 17]
+      },
+      "data_key": "det-key2",
+      "uri": "file://localhost/{{ root_path }}/dataset_part2.h5",
+      "mimetype": "application/x-hdf5",
+      "uid": "det-key2-uid-part2",
+      "run_start": "{{ uuid }}-9724b2201fe7"
+    }
+  },
+  {
+    "name": "stream_datum",
+    "doc": {
+      "stream_resource": "det-key2-uid-part2",
+      "descriptor": "{{ uuid }}-8c00740d9771",
+      "uid": "det-key2-uid-part2/0",
+      "indices": {
+        "start": 0,
+        "stop": 5
+      },
+      "seq_nums": {
+        "start": 1,
+        "stop": 6
       }
     }
   },

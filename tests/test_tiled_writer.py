@@ -1,15 +1,12 @@
 import json
 import os
-import uuid
 from collections.abc import Iterator
-from pathlib import Path
 from typing import cast
 from urllib.parse import parse_qs, urlparse
 
 import bluesky.plan_stubs as bps
 import bluesky.plans as bp
 import h5py
-import jinja2
 import numpy as np
 import ophyd.sim
 import pytest
@@ -26,81 +23,9 @@ from event_model.documents.event_descriptor import DataKey
 from event_model.documents.stream_datum import StreamDatum
 from event_model.documents.stream_resource import StreamResource
 from tiled.client import record_history
+from examples.render import render_templated_documents
 
 from bluesky_tiled_plugins import TiledWriter
-
-rng = np.random.default_rng(12345)
-
-
-@pytest.fixture(scope="module")
-def catalog(tmp_path_factory):
-    tiled_catalog = pytest.importorskip("tiled.catalog")
-    tmp_path = tmp_path_factory.mktemp("tiled_catalog")
-    return tiled_catalog.in_memory(
-        writable_storage={
-            "filesystem": str(tmp_path),
-            "sql": f"duckdb:///{tmp_path}/test.db",
-        },
-        readable_storage=[str(tmp_path.parent)],
-    )
-
-
-@pytest.fixture(scope="module")
-def app(catalog):
-    tsa = pytest.importorskip("tiled.server.app")
-    return tsa.build_app(catalog)
-
-
-@pytest.fixture(scope="module")
-def context(app):
-    tc = pytest.importorskip("tiled.client")
-    with tc.Context.from_app(app) as context:
-        yield context
-
-
-@pytest.fixture(scope="module")
-def client(context):
-    tc = pytest.importorskip("tiled.client")
-    return tc.from_context(context)
-
-
-@pytest.fixture(scope="module")
-def external_assets_folder(tmp_path_factory):
-    """External data files used with the saved documents."""
-    # Create a temporary directory
-    temp_dir = tmp_path_factory.mktemp("example_files")
-
-    # Create an external hdf5 file
-    with h5py.File(temp_dir.joinpath("dataset.h5"), "w") as file:
-        grp = file.create_group("entry").create_group("data")
-        grp.create_dataset("data_1", data=rng.random(size=(3,), dtype="float64"))
-        grp.create_dataset(
-            "data_2", data=rng.integers(-10, 10, size=(3, 13, 17)), dtype="<i8"
-        )
-
-    # Create a second external hdf5 file to be declared in a different stream resource
-    with h5py.File(temp_dir.joinpath("dataset_part2.h5"), "w") as file:
-        grp = file.create_group("entry").create_group("data")
-        grp.create_dataset(
-            "data_2", data=rng.integers(-10, 10, size=(5, 13, 17)), dtype="<i8"
-        )
-
-    # Create a sequence of tiff files
-    (temp_dir / "tiff_files").mkdir(parents=True, exist_ok=True)
-    for i in range(3):
-        data = rng.integers(0, 255, size=(1, 10, 15), dtype="uint8")
-        tf.imwrite(temp_dir.joinpath("tiff_files", f"img_{i:05}.tif"), data)
-
-    return str(temp_dir.absolute()).replace("\\", "/")
-
-
-def render_templated_documents(fname: str, data_dir: str):
-    dirpath = str(Path(__file__).parent.joinpath("examples"))
-    env = jinja2.Environment(loader=jinja2.FileSystemLoader(dirpath), autoescape=False)
-    template = env.get_template(fname)
-    rendered = template.render(root_path=data_dir, uuid=str(uuid.uuid4())[:-12])
-
-    yield from json.loads(rendered)
 
 
 class Named(HasName):
@@ -506,7 +431,7 @@ def test_validate_external_data(client, external_assets_folder, error_type, vali
         if (error_type == "shape") and (name == "descriptor"):
             doc["data_keys"]["det-key2"]["shape"] = [1, 2, 3]  # should be [1, 13, 17]
         elif (error_type == "chunks") and name in {"resource", "stream_resource"}:
-            doc["parameters"]["chunk_shape"] = [1, 2, 3]  # should be [100, 13, 17]
+            doc["parameters"]["chunk_shape"] = [1, 2, 3]  # should be [3, 13, 17]
         elif (error_type == "dtype") and (name == "descriptor"):
             doc["data_keys"]["det-key2"]["dtype_numpy"] = np.dtype(
                 "int32"
@@ -526,7 +451,7 @@ def test_validate_external_data(client, external_assets_folder, error_type, vali
             assert run["primary"].read() is not None
     else:
         assert run["primary"].read() is not None
-        assert run["primary"]["det-key2"].read().shape == (8, 13, 17)
+        assert run["primary"]["det-key2"].read().shape == (3, 13, 17)
 
 
 @pytest.mark.parametrize("squeeze", [True, False])
@@ -534,7 +459,7 @@ def test_slice_and_squeeze(client, external_assets_folder, squeeze):
     tw = TiledWriter(client)
 
     documents = render_templated_documents(
-        "external_assets_single_key.json", external_assets_folder
+        "external_assets_single_key_two_files.json", external_assets_folder
     )
     for item in documents:
         name, doc = item["name"], item["doc"]
@@ -559,7 +484,7 @@ def test_legacy_multiplier_parameter(client, external_assets_folder):
     tw = TiledWriter(client)
 
     documents = render_templated_documents(
-        "external_assets_single_key.json", external_assets_folder
+        "external_assets_single_key_two_files.json", external_assets_folder
     )
     for item in documents:
         name, doc = item["name"], item["doc"]
@@ -582,7 +507,7 @@ def test_streams_with_no_events(client, external_assets_folder):
     tw = TiledWriter(client)
 
     for item in render_templated_documents(
-        "external_assets_single_key.json", external_assets_folder
+        "external_assets_single_key_two_files.json", external_assets_folder
     ):
         name, doc = item["name"], item["doc"]
         if name == "start":
