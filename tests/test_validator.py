@@ -1,14 +1,20 @@
 import numpy as np
 import pytest
-from utils import render_templated_documents
+from examples.render import render_templated_documents
 from tiled.client.array import ArrayClient
 from tiled.client.dataframe import DataFrameClient
 
 from bluesky_tiled_plugins import TiledWriter
-from bluesky_tiled_plugins.writing.validator import validate_reading, validate_structure, validate, ReadingValidationException
+from bluesky_tiled_plugins.writing.validator import (
+    validate_reading,
+    validate_structure,
+    validate,
+    ReadingValidationException,
+)
+
 
 def test_validate_structure_shape(client, external_assets_folder):
-    tw = TiledWriter(client, validate=False)   # Do not validate on write (default)
+    tw = TiledWriter(client, validate=False)  # Do not validate on write (default)
 
     # Write documents with an introduced shape error
     documents = render_templated_documents(
@@ -41,7 +47,7 @@ def test_validate_structure_shape(client, external_assets_folder):
 
 
 def test_validate_structure_chunks(client, external_assets_folder):
-    tw = TiledWriter(client, validate=False)   # Do not validate on write (default)
+    tw = TiledWriter(client, validate=False)  # Do not validate on write (default)
 
     # Write documents with an introduced chunk shape error
     documents = render_templated_documents(
@@ -71,10 +77,10 @@ def test_validate_structure_chunks(client, external_assets_folder):
     assert array_client.chunks == ((3,), (13,), (17,))
     assert array_client.read() is not None
     assert any("Fixed chunk shape mismatch" in note for note in notes)
-        
+
 
 def test_validate_structure_dtype(client, external_assets_folder):
-    tw = TiledWriter(client, validate=False)   # Do not validate on write (default)
+    tw = TiledWriter(client, validate=False)  # Do not validate on write (default)
 
     # Write documents with an introduced dtype error
     documents = render_templated_documents(
@@ -109,7 +115,7 @@ def test_validate_structure_dtype(client, external_assets_folder):
 
 
 def test_validate_reading_array_success(client, external_assets_folder):
-    tw = TiledWriter(client, validate=False)   # Do not validate on write (default)
+    tw = TiledWriter(client, validate=False)  # Do not validate on write (default)
 
     # Write documents with TiledWriter
     documents = render_templated_documents(
@@ -129,7 +135,7 @@ def test_validate_reading_array_success(client, external_assets_folder):
 
 
 def test_validate_reading_array_failure(client, external_assets_folder):
-    tw = TiledWriter(client, validate=False)   # Do not validate on write (default)
+    tw = TiledWriter(client, validate=False)  # Do not validate on write (default)
 
     # Write documents with TiledWriter, point to non-existent file
     documents = render_templated_documents(
@@ -162,8 +168,9 @@ def test_validate_reading_array_failure(client, external_assets_folder):
         is None
     )
 
+
 def test_validate_reading_table_success(client):
-    tw = TiledWriter(client, validate=False)   # Do not validate on write (default)
+    tw = TiledWriter(client, validate=False)  # Do not validate on write (default)
 
     # Write documents with TiledWriter
     documents = render_templated_documents("internal_events.json", "")
@@ -175,12 +182,13 @@ def test_validate_reading_table_success(client):
         tw(name, doc)  # Write the document
 
     # Get the client for the written data
-    table_client = client[uid]["primary"].base['internal']
+    table_client = client[uid]["primary"].base["internal"]
     assert isinstance(table_client, DataFrameClient)
     assert validate_reading(table_client) is None
 
+
 def test_validate_bluesky_run_success(client, external_assets_folder):
-    tw = TiledWriter(client, validate=False)   # Do not validate on write (default)
+    tw = TiledWriter(client, validate=False)  # Do not validate on write (default)
 
     # Write documents with TiledWriter
     documents = render_templated_documents(
@@ -201,7 +209,7 @@ def test_validate_bluesky_run_success(client, external_assets_folder):
 
 
 def test_validate_bluesky_run_failure(client, external_assets_folder):
-    tw = TiledWriter(client, validate=False)   # Do not validate on write (default)
+    tw = TiledWriter(client, validate=False)  # Do not validate on write (default)
 
     # Write documents with an introduced shape error
     documents = render_templated_documents(

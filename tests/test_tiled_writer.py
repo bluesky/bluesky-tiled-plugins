@@ -23,7 +23,7 @@ from event_model.documents.event_descriptor import DataKey
 from event_model.documents.stream_datum import StreamDatum
 from event_model.documents.stream_resource import StreamResource
 from tiled.client import record_history
-from utils import render_templated_documents
+from examples.render import render_templated_documents
 
 from bluesky_tiled_plugins import TiledWriter
 
