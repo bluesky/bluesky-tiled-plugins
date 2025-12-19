@@ -244,34 +244,36 @@ def _normalize_human_friendly_time(val, tz):
 @register(name="time_range")
 @dataclass
 class TimeRange:
-    """
-    A search query representing a time range.
-
-    Parameters
-    ----------
-    since, until: dates gives as timestamp, datetime, or human-friendly string, optional
-    timezone : string
-        As in, 'US/Eastern'. If None is given, tzlocal is used.
-
-    Examples
-    --------
-    Any granularity (year, month, date, hour, minute, second) is accepted.
-
-    >>> TimeRange(since='2014')
-
-    >>> TimeRange(until='2019-07')
-
-    >>> TimeRange(since='2014-07-04', until='2020-07-04')
-
-    >>> TimeRange(since='2014-07-04 05:00')
-
-    """
-
     timezone: str
     since: float | None = None
     until: float | None = None
 
     def __init__(self, *, timezone=None, since=None, until=None):
+        """
+        A search query representing a time range.
+
+        Parameters
+        ----------
+
+        since, until: dates gives as timestamp, datetime, or human-friendly string, optional
+        timezone : string
+            As in, 'US/Eastern'. If None is given, tzlocal is used.
+
+        Examples
+        --------
+
+        Any granularity (year, month, date, hour, minute, second) is accepted.
+
+        >>> TimeRange(since='2014')
+
+        >>> TimeRange(until='2019-07')
+
+        >>> TimeRange(since='2014-07-04', until='2020-07-04')
+
+        >>> TimeRange(since='2014-07-04 05:00')
+
+        """
+
         # Stash the raw values just for use in the repr.
         self._raw_since = since
         self._raw_until = until

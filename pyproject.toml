@@ -69,11 +69,16 @@ dev = [
   { include-group = "test" },
 ]
 docs = [
-  "sphinx>=7.0",
   "myst_parser>=0.13",
+  "numpydoc",
+  "pydata_sphinx_theme",
+  "sphinx>=7.0",
   "sphinx_copybutton",
+  "sphinx_autobuild",
+  "sphinx_autodoc2",
   "sphinx_autodoc_typehints",
-  "furo>=2023.08.17",
+  "sphinx_design",
+  "sphinxcontrib_mermaid",
 ]
 
 

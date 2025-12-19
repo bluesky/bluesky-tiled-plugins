@@ -214,7 +214,9 @@ class CatalogOfBlueskyRuns(Container):
             result = super().search(query)
         else:
             if hasattr(query, "key"):
-                if not query.key.startswith("start.") or query.key.startswith("stop."):
+                if not (
+                    query.key.startswith("start.") or query.key.startswith("stop.")
+                ):
                     # Default to searching RunStart document.
                     query = copy.copy(query)
                     query.key = f"start.{query.key}"
