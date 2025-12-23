@@ -1,9 +1,8 @@
 # Representation of Bluesky Runs in Tiled
 
 [`Tiled`](https://blueskyproject.io/tiled/) is a data management system that
-allows for the storage and retrieval of structured data. In the context of
-Bluesky, it provides a way to store the data and metadata for runs in a
-structured format that can be easily accessed and queried.
+allows for the storage and retrieval of structured data along with the
+associated metadata.
 
 The `TiledWriter` callback is designed specifically for converting Bluesky run
 documents into a format suitable for storage in a Tiled database.
@@ -25,7 +24,7 @@ timestamps.
 
 The time dimension (that is, the sequence of measurements) is usually shared
 between internal and external data. Tiled handles this by writing all data from
-the same Bluesky stream into a container with a dedicated `"composite"` spec,
+the same Bluesky _stream_ into a container with a dedicated `"composite"` spec,
 which tells the Tiled client how the data are aligned. Each stream node's
 metadata includes the specifications for the related data keys as well as the
 configuration parameters provided in the `EventDescriptor` document.
@@ -63,95 +62,3 @@ BlueskyRun <Container ("BlueskyRun_v3")>
 >
 > To be able to use `TiledWriter`, the Tiled server must be configured with an
 > SQL catalog and an SQL-backed storage database for tabular data.
-
-## Callback Architecture
-
-Structurally, `TiledWriter` consists of two main parts: `RunNormalizer` and
-`_RunWriter`.
-
-The former is responsible for converting legacy document schemas to their latest
-version; this ensures that existing Bluesky code that relies on older versions
-of the Bluesky Event Model can still function correctly with `TiledWriter`. For
-example, while `TiledWriter` natively works with the modern `StreamResource` and
-`StreamDatum` documents commonly used in asynchronous plans, the `Resource` and
-`Datum` documents are automatically converted to their modern counterparts prior
-to being written to the Tiled catalog. The schema normalization is mostly done
-by renaming and restructuring certain document fields, but `RunNormalizer` also
-allows the user to invoke use-case-specific patches for each type of document
-and achieve high flexibility.
-
-The simplified flowchart of the `RunNormalizer` logic is shown below. It
-illustrates how the input documents (top) are processed and emitted as output
-documents (bottom) after specific transformations or caching operations.
-
-```{mermaid}
-flowchart TD
-    %% Input documents
-    subgraph Input [ ]
-        style Input fill:#ffffff,stroke-width:0
-        StartIn["Start"]
-        DescriptorIn["Descriptor"]
-        ResourceIn["Resource"]
-        DatumIn["Datum"]
-        EventIn["Event"]
-        StopIn["Stop"]
-    end
-
-    %% Emitted documents
-    subgraph Output [ ]
-        style Output fill:#ffffff,stroke-width:0
-        StartOut["Start"]
-        DescriptorOut["Descriptor"]
-        EventOut["Event"]
-        StreamResourceOut["StreamResource"]
-        StreamDatumOut["StreamDatum"]
-        StopOut["Stop"]
-    end
-
-    %% Processing steps
-    StartIn --> P1["start():<br/>patch → emit"]
-    P1 --> StartOut
-
-    DescriptorIn --> P2["descriptor():<br/>patch → rename fields →<br/>track internal/external keys → emit"]
-    P2 --> DescriptorOut
-
-    ResourceIn --> P3["resource():<br/>patch → convert to StreamResource → cache"]
-    P3 --> SResCache[(SRes Cache)]
-
-    DatumIn --> P4["datum():<br/>patch → cache"]
-    P4 --> DatumCache[(Datum Cache)]
-
-    EventIn --> P5["event():<br/>patch → split internal/external keys → emit"]
-    P5 -->|internal data| EventOut
-    P5 -->|external data| P6["convert_datum_to_stream_datum()<br/>move datum_kwargs to parameters on SRes"]
-    P6 --> StreamDatumOut
-    P6 --> |only before first SDatum| StreamResourceOut
-
-    StopIn --> P7["stop():<br/>patch → flush cached StreamDatum"]
-    P7 --> StopOut
-    P7 --> StreamDatumOut
-    P7 --> |if not emitted<br/>already| StreamResourceOut
-
-    %% Extra connections
-    SResCache --> P6
-    DatumCache --> P6
-
-    %% Styling
-    classDef doc fill:#e0f7fa,stroke:#00796b,stroke-width:1px;
-    classDef emit fill:#f1f8e9,stroke:#33691e,stroke-width:1px;
-    classDef proc fill:#fff3e0,stroke:#e65100,stroke-width:1px;
-
-    class StartIn,DescriptorIn,ResourceIn,DatumIn,EventIn,StopIn doc;
-    class StartOut,DescriptorOut,EventOut,StreamResourceOut,StreamDatumOut,StopOut emit;
-    class P1,P2,P3,P4,P5,P6,P7 proc;
-```
-
-The second component, `_RunWriter`, is the callback that directly communicates
-with the Tiled server. It uses the `RunRouter` to manage the routing of
-documents from multiple runs into separate instances of the internal
-`_RunWriter` callback, ensuring that each Bluesky run is handled separately.
-
-Furthermore, `TiledWriter` implements a backup mechanism that allows saving the
-documents to a local file system in case the Tiled server is not available or
-any other error occurs during the writing process. This ensures that no data is
-lost and can be retried later.

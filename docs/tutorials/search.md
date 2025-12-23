@@ -2,7 +2,7 @@
 
 A catalog of Bluesky Runs can be searched (filtered) based on metadata. The
 metadata is drawn from the Bluesky documents that are issued at the beginning
-and end of each Run: the _Run Start_ and _Run Stop_ documents.
+and at the end of each Run: the _Run Start_ and _Run Stop_ documents.
 
 A dot `.` can be used to traverse nested fields.
 

@@ -4,11 +4,15 @@
 
 ## All You Need To Know
 
-Simply _installing_ `bluesky-tiled-plugins` registers them such that Tiled will
-automatically discover and use them.
+This package provides a set of custom Python clients designed to facilitate
+interaction with Bluesky data stored in Tiled catalogs.
 
-Navigating **with** `bluesky-tiled-plugins` installed, we see useful information
-displayed:
+Simply _installing_ `bluesky-tiled-plugins` registers these clients with Tiled
+so it will automatically discover and use them.
+
+Navigating a Tiled catalog **with** `bluesky-tiled-plugins` installed, we
+readily see scientifically-useful information, such as the `scan_id`s of Bluesky
+runs:
 
 ```
  <Catalog {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, ...} ~241632 entries>
@@ -16,14 +20,14 @@ displayed:
 ```
 
 Navigating **without** `bluesky-tiled-plugins` installed, we see more generic
-information:
+information displayed, e.g. `uuid`s of Bluesky runs:
 
 ```
 <Container {'c7cfa95c-daef-4bb1-bb8f-8d1a4f25e5dc', ...} ~241637 entries>
 <Container {'baseline', 'primary'}>
 ```
 
-There are also convenience properties like:
+There are also convenience properties, for example:
 
 ```
 run.start  # alias for run.metadata["start"]

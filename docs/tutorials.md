@@ -1,6 +1,6 @@
 # Tutorials
 
-Tutorials for installation and typical usage. New users start here.
+Tutorials for installation and typical usage.
 
 ```{toctree}
 :maxdepth: 1

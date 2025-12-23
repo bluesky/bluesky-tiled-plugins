@@ -13,14 +13,14 @@ server dependencies.
 :::{tab-item} pip
 :sync: pip
 
-You will need python 3.10 or later. You can check your version of python by
+You will need Python 3.10 or later. You can check your version of Python by
 typing into a terminal:
 
 ```sh
 python3 --version
 ```
 
-It is recommended that you install into a “virtual environment” so this
+It is recommended that you work in an isolated “virtual environment”, so this
 installation will not interfere with any existing Python software:
 
 ```sh
@@ -129,9 +129,9 @@ data = tiled_client[uid]["primary/img"].read()
 
 ### Run `SimpleTiledServer`
 
-This starts a tiled server, running on a background thread. This way of running
+This starts a Tiled server, running on a background thread. This way of running
 the server is intended for "first steps" and embedded deployments. See the guide
-on [deploying Tiled for Bluesky](#deploy-tiled-for-bluesky)
+on [deploying Tiled for Bluesky](#deploy-tiled-for-bluesky) for more details.
 
 ```python
 # Initialize the Tiled server and client
@@ -148,17 +148,18 @@ tiled_client = from_uri(tiled_server.uri)
 ```
 
 ````{note}
-If running the server in a separate process, provide the appropriate
-address, i.e.
+If running the server in a separate process, container, or host, provide the
+appropriate address, i.e.
 
 ```python
 tiled_client = from_uri("http://...")
 ```
 ````
 
-When used with detectors that write data directory to storage, it is necessary
-to set the `readable_storage` parameter. This grants the server permission to
-serve data at certain file paths(s).
+When used with detectors that write data directory to storage (e.g. on local
+disk, network file system, or object storage), it is necessary to set the
+`readable_storage` parameter. This grants the server permission to serve data at
+certain file paths(s).
 
 ### Subscribe
 
@@ -178,11 +179,11 @@ to Tiled. For "live" access to data, set `batch_size=1`.
 ### Acquire Data and Access It
 
 ```python
-# Run an experiment collecting internal data
+# Run an experiment collecting only internal (Event) data
 (uid,) = RE(bp.count([det], 3))
 data = tiled_client[uid]["primary/det"].read()
 
-# Run an experiment collecting external data
+# Run an experiment collecting external (detector) data
 (uid,) = RE(bp.count([hw(save_path=save_path).img], 2))
 data = tiled_client[uid]["primary/img"].read()
 ```
