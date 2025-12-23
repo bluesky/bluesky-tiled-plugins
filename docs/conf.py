@@ -44,7 +44,7 @@ exclude_patterns = [
 ]
 
 html_theme = "pydata_sphinx_theme"
-html_logo = "_static/logo.svg"
+html_logo = "_static/logo_bluesky.svg"
 html_theme_options: dict[str, Any] = {
     "github_url": f"https://github.com/{github_user}/{project}",
     "external_links": [

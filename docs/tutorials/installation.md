@@ -8,14 +8,14 @@
 :::{tab-item} pip
 :sync: pip
 
-You will need python 3.10 or later. You can check your version of python by
+You will need Python 3.10 or later. You can check your version of Python by
 typing into a terminal:
 
 ```sh
 python3 --version
 ```
 
-It is recommended that you install into a “virtual environment” so this
+It is recommended that you work in an isolated “virtual environment”, so this
 installation will not interfere with any existing Python software:
 
 ```sh
