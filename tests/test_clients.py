@@ -20,6 +20,3 @@ def run_client(client, external_assets_folder, request):
 def test_documents(run_client):
     assert len(list(run_client.v3.documents())) > 0
     assert len(list(run_client.v2.documents())) > 0
-
-def test_read_data(run_client):
-    breakpoint()
