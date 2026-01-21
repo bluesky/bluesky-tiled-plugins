@@ -36,7 +36,7 @@ from tiled.client.array import ArrayClient
 from tiled.client.base import BaseClient
 from tiled.client.container import Container
 from tiled.client.dataframe import DataFrameClient
-from tiled.client.utils import handle_error
+from tiled.client.utils import handle_error, retry_context
 from tiled.structures.core import Spec
 from tiled.utils import safe_json_dump
 
@@ -714,18 +714,20 @@ class _RunWriter(DocumentRouter):
         data_source.id = node.data_sources()[
             0
         ].id  # ID of the existing DataSource record
-        handle_error(
-            node.context.http_client.put(
-                node.uri.replace("/metadata/", "/data_source/", 1),
-                content=safe_json_dump({"data_source": data_source}),
-                params={
-                    "patch_shape": ",".join(map(str, patch.shape)),
-                    "patch_offset": ",".join(map(str, patch.offset)),
-                }
-                if patch
-                else None,
-            )
-        ).json()
+
+        for attempt in retry_context():
+            with attempt:
+                response = node.context.http_client.put(
+                    node.uri.replace("/metadata/", "/data_source/", 1),
+                    content=safe_json_dump({"data_source": data_source}),
+                    params={
+                        "patch_shape": ",".join(map(str, patch.shape)),
+                        "patch_offset": ",".join(map(str, patch.offset)),
+                    }
+                    if patch
+                    else None,
+                )
+        handle_error(response)
 
     def _write_external_data(self, doc: StreamDatum):
         """Register (or update) the external data from StreamDatum in Tiled"""

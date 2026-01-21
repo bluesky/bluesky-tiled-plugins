@@ -1,12 +1,12 @@
 import logging
+import re
 import time
 
 from tiled.client.array import ArrayClient
 from tiled.client.dataframe import DataFrameClient
-from tiled.client.utils import handle_error
+from tiled.client.utils import handle_error, retry_context
 from tiled.mimetypes import DEFAULT_ADAPTERS_BY_MIMETYPE as ADAPTERS_BY_MIMETYPE
 from tiled.utils import safe_json_dump
-import re
 
 logger = logging.getLogger(__name__)
 
@@ -266,11 +266,14 @@ def validate_structure(data_client, fix_errors=False) -> list[str]:
     # Update the data source structure if any fixes were applied
     if notes:
         data_source.structure = structure
-        handle_error(
-            data_client.context.http_client.put(
-                data_client.uri.replace("/api/v1/metadata/", "/api/v1/data_source/", 1),
-                content=safe_json_dump({"data_source": data_source}),
-            )
-        ).json()
+        for attempt in retry_context():
+            with attempt:
+                response = data_client.context.http_client.put(
+                    data_client.uri.replace(
+                        "/api/v1/metadata/", "/api/v1/data_source/", 1
+                    ),
+                    content=safe_json_dump({"data_source": data_source}),
+                )
+        handle_error(response)
 
     return notes

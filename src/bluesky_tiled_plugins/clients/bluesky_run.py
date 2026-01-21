@@ -7,7 +7,7 @@ import warnings
 from datetime import datetime
 
 from tiled.client.container import Container
-from tiled.client.utils import handle_error
+from tiled.client.utils import handle_error, retry_context
 
 from ._common import IPYTHON_METHODS
 from .bluesky_event_stream import BlueskyEventStreamV2SQL
@@ -212,27 +212,32 @@ class BlueskyRunV2Mongo(BlueskyRunV2):
         else:
             fill = bool(fill)
         link = self.item["links"]["self"].replace("/metadata", "/documents", 1)
-        with self.context.http_client.stream(
-            "GET",
-            link,
-            params={"fill": fill},
-            headers={"Accept": "application/json-seq"},
-        ) as response:
-            if response.is_error:
-                response.read()
-                handle_error(response)
-            tail = ""
-            for chunk in response.iter_bytes():
-                for line in chunk.decode().splitlines(keepends=True):
-                    if line[-1] == "\n":
-                        item = json.loads(tail + line)
+        for attempt in retry_context():
+            with attempt:
+                with self.context.http_client.stream(
+                    "GET",
+                    link,
+                    params={"fill": fill},
+                    headers={"Accept": "application/json-seq"},
+                ) as response:
+                    if response.is_error:
+                        response.read()
+                        handle_error(response)
+                    tail = ""
+                    for chunk in response.iter_bytes():
+                        for line in chunk.decode().splitlines(keepends=True):
+                            if line[-1] == "\n":
+                                item = json.loads(tail + line)
+                                yield (
+                                    item["name"],
+                                    _document_types[item["name"]](item["doc"]),
+                                )
+                                tail = ""
+                            else:
+                                tail += line
+                    if tail:
+                        item = json.loads(tail)
                         yield (item["name"], _document_types[item["name"]](item["doc"]))
-                        tail = ""
-                    else:
-                        tail += line
-            if tail:
-                item = json.loads(tail)
-                yield (item["name"], _document_types[item["name"]](item["doc"]))
 
 
 class _BlueskyRunSQL(BlueskyRun):
