@@ -4,9 +4,9 @@ import time
 
 from tiled.client.array import ArrayClient
 from tiled.client.dataframe import DataFrameClient
-from tiled.client.utils import handle_error
+from tiled.client.utils import handle_error, retry_context
 from tiled.mimetypes import DEFAULT_ADAPTERS_BY_MIMETYPE as ADAPTERS_BY_MIMETYPE
-from tiled.utils import safe_json_dump, retry_context
+from tiled.utils import safe_json_dump
 
 logger = logging.getLogger(__name__)
 

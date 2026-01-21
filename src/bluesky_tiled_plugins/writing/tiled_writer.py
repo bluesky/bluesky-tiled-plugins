@@ -36,9 +36,9 @@ from tiled.client.array import ArrayClient
 from tiled.client.base import BaseClient
 from tiled.client.container import Container
 from tiled.client.dataframe import DataFrameClient
-from tiled.client.utils import handle_error
+from tiled.client.utils import handle_error, retry_context
 from tiled.structures.core import Spec
-from tiled.utils import safe_json_dump, retry_context
+from tiled.utils import safe_json_dump
 
 from ..utils import truncate_json_overflow
 from ._dispatcher import Dispatcher

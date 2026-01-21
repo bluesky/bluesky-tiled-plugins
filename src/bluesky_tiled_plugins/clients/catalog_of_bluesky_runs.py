@@ -6,9 +6,9 @@ import operator
 from typing import Any
 
 from tiled.client.container import Container
-from tiled.client.utils import handle_error
+from tiled.client.utils import handle_error, retry_context
 from tiled.queries import Comparison, Eq, Like
-from tiled.utils import safe_json_dump, retry_context
+from tiled.utils import safe_json_dump
 
 from ..queries import RawMongo, ScanIDRange, TimeRange, _PartialUID, _ScanID
 from .bluesky_run import BlueskyRunV2, BlueskyRunV3
