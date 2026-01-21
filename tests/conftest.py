@@ -4,8 +4,10 @@ import pytest
 from bluesky.run_engine import RunEngine, TransitionError
 
 import h5py
+import copy
 import tifffile as tf
 import numpy as np
+from bluesky_tiled_plugins.exporters import json_seq_exporter
 
 rng = np.random.default_rng(12345)
 
@@ -46,7 +48,16 @@ def catalog(tmp_path_factory):
 @pytest.fixture(scope="module")
 def app(catalog):
     tsa = pytest.importorskip("tiled.server.app")
-    return tsa.build_app(catalog)
+    default_serialization_registry = pytest.importorskip(
+        "tiled.media_type_registration"
+    ).default_serialization_registry
+
+    serialization_registry = copy.deepcopy(default_serialization_registry)
+    serialization_registry.register(
+        "BlueskyRun", "application/json-seq", json_seq_exporter
+    )
+
+    return tsa.build_app(catalog, serialization_registry=serialization_registry)
 
 
 @pytest.fixture(scope="module")
