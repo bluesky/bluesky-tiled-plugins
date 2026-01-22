@@ -1,6 +1,6 @@
 # Replay Bluesky documents
 
-The bluesky-tiled-plugings package provides a Tiled exporter that produces
+The bluesky-tiled-plugins package provides a Tiled exporter that produces
 Bluesky documents, encoded as [newline-delimited JSON][].
 
 This supports the `run.documents()` method in the Python client.
@@ -12,6 +12,8 @@ media_types:
   BlueskyRun:
     application/json-seq: bluesky_tiled_plugins.exporters:json_seq_exporter
 ```
+
+## Fidelity
 
 Tiled does not store the documents in their original form. It stores a
 consolidated representation of the metadata and data extracted from the
