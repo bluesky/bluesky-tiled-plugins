@@ -19,7 +19,7 @@ documents, which enables better read performance. Therefore, the exported
 documents are reconstructed and they will not be an exact byte-by-byte
 copy---e.g. the UIDs of individual `Datums` are not retained. However, they are
 _semantically_ equivalent to the originals, and they "round trip" without loss
-of any metadata or data. That is, if the exported documents and re-ingested with
+of any metadata or data. That is, if the exported documents are re-ingested with
 `TiledWriter`, they are guaranteed to produce the same structure in Tiled.
 
 [newline-delimited JSON]: https://github.com/ndjson/ndjson-spec
