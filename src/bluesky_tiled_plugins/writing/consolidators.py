@@ -411,7 +411,7 @@ class ConsolidatorBase:
                     ("time",)
                     + old_dims
                     + tuple(
-                        f"dim{i}"
+                        f"dim_{i}"
                         for i in range(len(old_dims) + 1, len(structure.shape))
                     )
                 )
