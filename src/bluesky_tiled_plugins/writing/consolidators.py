@@ -368,9 +368,9 @@ class ConsolidatorBase:
                 # Estimate the number of frames_per_event (multiplier)
                 multiplier = (
                     1
-                    if structure.shape[0] % structure.chunks[0][0]
+                    if structure.shape[0] % (structure.chunks[0][0] or 1)
                     else structure.chunks[0][0]
-                )
+                ) or 1
                 self._num_rows = structure.shape[0] // multiplier
                 self.datum_shape = (multiplier,) + structure.shape[1:]
             notes.append(msg)
