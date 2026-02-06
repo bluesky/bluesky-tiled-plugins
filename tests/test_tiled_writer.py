@@ -414,7 +414,7 @@ def test_data_source_patching(
         assert actual_patch_offsets == expected_patch_offsets
 
 
-@pytest.mark.parametrize("error_type", ["shape", "chunks", "dtype"])
+@pytest.mark.parametrize("error_type", ["shape", "chunks", "dtype", "dims"])
 @pytest.mark.parametrize("validate", [True, False])
 def test_validate_external_data(client, external_assets_folder, error_type, validate):
     tw = TiledWriter(client, validate=validate)
@@ -436,6 +436,11 @@ def test_validate_external_data(client, external_assets_folder, error_type, vali
             doc["data_keys"]["det-key2"]["dtype_numpy"] = np.dtype(
                 "int32"
             ).str  # should be "int64"
+        elif (error_type == "dims") and (name == "descriptor"):
+            item["doc"]["data_keys"]["det-key2"]["dims"] = [
+                "dim_2",
+                "dim_3",
+            ]  # Missing time dim
 
         # Check that the warning is issued when data changes during the validation
         if name == "stop" and validate:
@@ -452,6 +457,7 @@ def test_validate_external_data(client, external_assets_folder, error_type, vali
     else:
         assert run["primary"].read() is not None
         assert run["primary"]["det-key2"].read().shape == (3, 13, 17)
+        assert run["primary"]["det-key2"].structure().dims == ("time", "dim_2", "dim_3")
 
 
 @pytest.mark.parametrize("squeeze", [True, False])

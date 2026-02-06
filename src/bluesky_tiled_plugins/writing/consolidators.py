@@ -13,6 +13,13 @@ from tiled.structures.core import StructureFamily
 from tiled.structures.data_source import Asset, DataSource, Management
 
 
+def list_summands(A: int, b: int, repeat: int = 1) -> tuple[int, ...]:
+    # Generate a list with repeated b summing up to A; append the remainder if necessary
+    # e.g. list_summands(13, 3) = [3, 3, 3, 3, 1]
+    # if `repeat = n`, n > 1, copy and repeat the entire result n times
+    return tuple([b] * (A // b) + ([A % b] if A % b > 0 else [])) * repeat or (0,)
+
+
 @dataclasses.dataclass
 class Patch:
     shape: tuple[int, ...]
@@ -210,14 +217,6 @@ class ConsolidatorBase:
         Chunking along the trailing dimensions is always preserved as in the original (single) array.
         """
 
-        def list_summands(A: int, b: int, repeat: int = 1) -> tuple[int, ...]:
-            # Generate a list with repeated b summing up to A; append the remainder if necessary
-            # e.g. list_summands(13, 3) = [3, 3, 3, 3, 1]
-            # if `repeat = n`, n > 1, copy and repeat the entire result n times
-            return tuple([b] * (A // b) + ([A % b] if A % b > 0 else [])) * repeat or (
-                0,
-            )
-
         # If chunk shape is less than or equal to the total shape dimensions, chunk each specified dimension
         # starting from the leading dimension
         if len(self.chunk_shape) <= len(self.shape):
@@ -369,9 +368,9 @@ class ConsolidatorBase:
                 # Estimate the number of frames_per_event (multiplier)
                 multiplier = (
                     1
-                    if structure.shape[0] % structure.chunks[0][0]
+                    if structure.shape[0] % (structure.chunks[0][0] or 1)
                     else structure.chunks[0][0]
-                )
+                ) or 1
                 self._num_rows = structure.shape[0] // multiplier
                 self.datum_shape = (multiplier,) + structure.shape[1:]
             notes.append(msg)
@@ -412,7 +411,7 @@ class ConsolidatorBase:
                     ("time",)
                     + old_dims
                     + tuple(
-                        f"dim{i}"
+                        f"dim_{i}"
                         for i in range(len(old_dims) + 1, len(structure.shape))
                     )
                 )
@@ -525,11 +524,33 @@ class MultipartRelatedConsolidator(ConsolidatorBase):
                 f"datum ({self.datum_shape[0]}): variable-sized files are not allowed."
             )
 
+        # Compile and set the filename template
+        self.template = self._compile_template(
+            self._sres_parameters["template"], self._sres_parameters.get("filename", "")
+        )
+
+    @staticmethod
+    def _compile_template(template: str, filename: str = "") -> str:
+        """Compile a filename template from old-style to new-style Python formatting
+
+        Parameters
+        ----------
+        template : str
+            An old-style Python formatting string, e.g. "%s%s_%06d.tif
+        filename : str
+            An optional filename to substitute for the first %s in the template.
+
+        Returns
+        -------
+            A new-style Python formatting string, e.g. "filename_{:06d}.tif"
+        """
+
         def int_replacer(match):
             """Normalize filename template
 
-            Replace an integer format specifier with a new-style format specifier, i.e. convert the template string
-            from "old" to "new" Python style, e.g. "%s%s_%06d.tif" to "filename_{:06d}.tif"
+            Replace an integer format specifier with a new-style format specifier,
+            i.e. convert the template string from "old" to "new" Python style,
+            e.g. "%s%s_%06d.tif" to "filename_{:06d}.tif"
 
             """
             flags, width, precision, type_char = match.groups()
@@ -558,15 +579,14 @@ class MultipartRelatedConsolidator(ConsolidatorBase):
             # Construct the new-style format specifier
             return f"{{:{flag_str}{width_str}{precision_str}{type_char}}}"
 
-        self.template = (
-            self._sres_parameters["template"]
-            .replace("%s", "{:s}", 1)
+        result = (
+            template.replace("%s", "{:s}", 1)
             .replace("%s", "")
-            .replace("{:s}", self._sres_parameters.get("filename", ""), 1)
+            .replace("{:s}", filename, 1)
         )
-        self.template = re.sub(
-            r"%([-+#0 ]*)(\d+)?(?:\.(\d+))?([d])", int_replacer, self.template
-        )
+        result = re.sub(r"%([-+#0 ]*)(\d+)?(?:\.(\d+))?([d])", int_replacer, result)
+
+        return result
 
     def get_datum_uri(self, indx: int):
         """Return a full uri for a datum (an individual image file) based on its index in the sequence.
@@ -616,6 +636,14 @@ class MultipartRelatedConsolidator(ConsolidatorBase):
             self.data_uris.append(new_datum_uri)
 
         return super().consume_stream_datum(doc)
+
+    def update_from_stream_resource(self, stream_resource: StreamResource):
+        """Add an Asset for a new StreamResource document"""
+
+        self._sres_parameters = stream_resource["parameters"]
+        self.template = self._compile_template(
+            self._sres_parameters["template"], self._sres_parameters.get("filename", "")
+        )
 
 
 class TIFFConsolidator(MultipartRelatedConsolidator):

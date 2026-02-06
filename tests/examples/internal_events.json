@@ -87,18 +87,31 @@
           "dtype": "array",
           "shape": [8],
           "object_name": "det"
+        },
+        "ragged": {
+          "source": "SIM:det",
+          "dtype": "array",
+          "shape": [4],
+          "object_name": "det"
+        },
+        "time": {
+          "source": "SIM:det",
+          "dtype": "number",
+          "shape": [],
+          "precision": 3,
+          "object_name": "det"
         }
       },
       "name": "primary",
       "object_keys": {
-        "det": ["det", "empty", "long"]
+        "det": ["det", "empty", "long", "ragged", "time"]
       },
       "run_start": "{{ uuid }}-dc0518f354ee",
       "time": 1745338531.004459,
       "uid": "{{ uuid }}-ab0498e83e2b",
       "hints": {
         "det": {
-          "fields": ["det", "empty", "long"]
+          "fields": ["det", "empty", "long", "ragged", "time"]
         }
       }
     }
@@ -111,12 +124,16 @@
       "data": {
         "det": 1.0,
         "empty": [],
-        "long": [0, 1, 2, 3, 4, 5, 6, 7]
+        "long": [0, 1, 2, 3, 4, 5, 6, 7],
+        "ragged": [0, 1, 2, 3],
+        "time": 1745338531.00165
       },
       "timestamps": {
         "det": 1745338531.001646,
         "empty": 1745338531.001647,
-        "long": 1745338531.001648
+        "long": 1745338531.001648,
+        "ragged": 1745338531.001649,
+        "time": 1745338531.00165
       },
       "seq_num": 1,
       "filled": {},
@@ -131,12 +148,16 @@
       "data": {
         "det": 1.0,
         "empty": [],
-        "long": [10, 11, 12, 13, 14, 15, 16, 17]
+        "long": [10, 11, 12, 13, 14, 15, 16, 17],
+        "ragged": [10, 11],
+        "time": 1745338531.00165
       },
       "timestamps": {
         "det": 1745338531.217144,
         "empty": 1745338531.217145,
-        "long": 1745338531.217146
+        "long": 1745338531.217146,
+        "ragged": 1745338531.217147,
+        "time": 1745338531.00165
       },
       "seq_num": 2,
       "filled": {},
@@ -216,18 +237,31 @@
           "dtype": "array",
           "shape": [8],
           "object_name": "det"
+        },
+        "ragged": {
+          "source": "SIM:det",
+          "dtype": "array",
+          "shape": [4],
+          "object_name": "det"
+        },
+        "time": {
+          "source": "SIM:det",
+          "dtype": "number",
+          "shape": [],
+          "precision": 3,
+          "object_name": "det"
         }
       },
       "name": "primary",
       "object_keys": {
-        "det": ["det", "empty", "long"]
+        "det": ["det", "empty", "long", "ragged", "time"]
       },
       "run_start": "{{ uuid }}-dc0518f354ee",
       "time": 1745338532.004459,
       "uid": "{{ uuid }}-ab0498e83e2b-2",
       "hints": {
         "det": {
-          "fields": ["det", "empty", "long"]
+          "fields": ["det", "empty", "long", "ragged", "time"]
         }
       }
     }
@@ -240,12 +274,16 @@
       "data": {
         "det": 1.0,
         "empty": [],
-        "long": [20, 21, 22, 23, 24, 25, 26, 27]
+        "long": [20, 21, 22, 23, 24, 25, 26, 27],
+        "ragged": [20, 21, 22, 23],
+        "time": 1745338533.00165
       },
       "timestamps": {
         "det": 1745338533.219767,
         "empty": 1745338533.219768,
-        "long": 1745338533.219769
+        "long": 1745338533.219769,
+        "ragged": 1745338533.21977,
+        "time": 1745338533.219771
       },
       "seq_num": 3,
       "filled": {},
