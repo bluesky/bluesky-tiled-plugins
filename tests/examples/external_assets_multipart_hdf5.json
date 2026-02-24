@@ -1,0 +1,150 @@
+[
+  {
+    "name": "start",
+    "doc": {
+      "uid": "{{ uuid }}-9724b2201fe7",
+      "time": 1745500521.706236,
+      "scan_id": 3,
+      "plan_type": "generator",
+      "plan_name": "count",
+      "detectors": ["det"]
+    }
+  },
+  {
+    "name": "descriptor",
+    "doc": {
+      "configuration": {
+        "det": {
+          "data": {},
+          "timestamps": {},
+          "data_keys": {}
+        }
+      },
+      "data_keys": {
+        "det-key3": {
+          "source": "file",
+          "dtype": "array",
+          "dtype_numpy": "<f8",
+          "shape": [1, 13, 17],
+          "external": "STREAM:",
+          "object_name": "det"
+        }
+      },
+      "name": "primary",
+      "object_keys": {
+        "det": ["det-key3"]
+      },
+      "run_start": "{{ uuid }}-9724b2201fe7",
+      "time": 1745500521.79327,
+      "uid": "{{ uuid }}-8c00740d9771",
+      "hints": {}
+    }
+  },
+  {
+    "name": "resource",
+    "doc": {
+      "resource_kwargs": {
+        "chunk_shape": [1, 13, 17],
+        "template": "%s%s_%6.6d.h5",
+        "filename": "/dataset_part",
+        "frame_per_point": 1,
+        "dataset": "/entry/data/data"
+      },
+      "root": "{{ root_path }}",
+      "resource_path": "/multipart_hdf5",
+      "spec": "AD_HDF5",
+      "uid": "det-key3-uid"
+    }
+  },
+  {
+    "name": "datum",
+    "doc": {
+      "resource": "det-key3-uid",
+      "datum_kwargs": {
+        "point_number": 0
+      },
+      "datum_id": "det-key3-uid/0"
+    }
+  },
+  {
+    "name": "event",
+    "doc": {
+      "uid": "{{ uuid }}-418d3390e5b8/0",
+      "time": 1745500522.79327,
+      "data": {
+        "det-key3": "det-key3-uid/0"
+      },
+      "timestamps": {
+        "det-key3": 1745500522.79327
+      },
+      "seq_num": 1,
+      "filled": {},
+      "descriptor": "{{ uuid }}-8c00740d9771"
+    }
+  },
+  {
+    "name": "datum",
+    "doc": {
+      "resource": "det-key3-uid",
+      "datum_kwargs": {
+        "point_number": 1
+      },
+      "datum_id": "det-key3-uid/1"
+    }
+  },
+  {
+    "name": "event",
+    "doc": {
+      "uid": "{{ uuid }}-418d3390e5b8/1",
+      "time": 1745500523.79327,
+      "data": {
+        "det-key3": "det-key3-uid/1"
+      },
+      "timestamps": {
+        "det-key3": 1745500523.79327
+      },
+      "seq_num": 2,
+      "filled": {},
+      "descriptor": "{{ uuid }}-8c00740d9771"
+    }
+  },
+  {
+    "name": "datum",
+    "doc": {
+      "resource": "det-key3-uid",
+      "datum_kwargs": {
+        "point_number": 2
+      },
+      "datum_id": "det-key3-uid/2"
+    }
+  },
+  {
+    "name": "event",
+    "doc": {
+      "uid": "{{ uuid }}-418d3390e5b8/2",
+      "time": 1745500522.79327,
+      "data": {
+        "det-key3": "det-key3-uid/2"
+      },
+      "timestamps": {
+        "det-key3": 1745500522.79327
+      },
+      "seq_num": 3,
+      "filled": {},
+      "descriptor": "{{ uuid }}-8c00740d9771"
+    }
+  },
+  {
+    "name": "stop",
+    "doc": {
+      "uid": "{{ uuid }}-fe2748f474de",
+      "time": 1745500525.771699,
+      "run_start": "{{ uuid }}-9724b2201fe7",
+      "exit_status": "success",
+      "reason": "",
+      "num_events": {
+        "primary": 3
+      }
+    }
+  }
+]

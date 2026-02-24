@@ -87,6 +87,16 @@ def external_assets_folder(tmp_path_factory):
             "data_2", data=rng.integers(-10, 10, size=(3, 13, 17)), dtype="<i8"
         )
 
+    # Create a sequence of related hdf5 files to be declared in the same stream resource
+    for i in range(3):
+        parent_dir = temp_dir.joinpath("multipart_hdf5")
+        parent_dir.mkdir(parents=True, exist_ok=True)
+        with h5py.File(parent_dir.joinpath(f"dataset_part_{i:06d}.h5"), "w") as file:
+            grp = file.create_group("entry").create_group("data")
+            grp.create_dataset(
+                "data", data=rng.random(size=(1, 13, 17), dtype="float64")
+            )
+
     # Create a second external hdf5 file to be declared in a different stream resource
     with h5py.File(temp_dir.joinpath("dataset_part2.h5"), "w") as file:
         grp = file.create_group("entry").create_group("data")
