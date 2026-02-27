@@ -1,6 +1,8 @@
 import logging
 import re
 import time
+from dataclasses import asdict
+from packaging.version import Version
 
 from tiled.client.array import ArrayClient
 from tiled.client.dataframe import DataFrameClient
@@ -266,6 +268,15 @@ def validate_structure(data_client, fix_errors=False) -> list[str]:
     # Update the data source structure if any fixes were applied
     if notes:
         data_source.structure = structure
+
+        # Backompatibility: if the server is older than 0.2.4,
+        # it can not accept the "properties" field in the data source.
+        # This can be removed in later releases.
+        if Version(data_client.context.server_info.library_version) < Version("0.2.4"):
+            data_source = {
+                k: v for k, v in asdict(data_source).items() if k != "properties"
+            }
+
         for attempt in retry_context():
             with attempt:
                 response = data_client.context.http_client.put(
