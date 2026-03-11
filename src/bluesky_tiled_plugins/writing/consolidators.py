@@ -1,7 +1,5 @@
 import collections
 import dataclasses
-import os
-import re
 import warnings
 from typing import Literal, cast
 
@@ -12,12 +10,7 @@ from tiled.structures.array import ArrayStructure, BuiltinDtype, StructDtype
 from tiled.structures.core import StructureFamily
 from tiled.structures.data_source import Asset, DataSource, Management
 
-
-def list_summands(A: int, b: int, repeat: int = 1) -> tuple[int, ...]:
-    # Generate a list with repeated b summing up to A; append the remainder if necessary
-    # e.g. list_summands(13, 3) = [3, 3, 3, 3, 1]
-    # if `repeat = n`, n > 1, copy and repeat the entire result n times
-    return tuple([b] * (A // b) + ([A % b] if A % b > 0 else [])) * repeat or (0,)
+from ..utils import compile_template, list_summands
 
 
 @dataclasses.dataclass
@@ -465,11 +458,20 @@ class CSVConsolidator(ConsolidatorBase):
 class HDF5Consolidator(ConsolidatorBase):
     supported_mimetypes = {"application/x-hdf5"}
 
+    def __new__(cls, stream_resource: StreamResource, descriptor: EventDescriptor):
+        if stream_resource["parameters"].get("template"):
+            return MultipartHDF5Consolidator(stream_resource, descriptor)
+        return super().__new__(cls)
+
     def adapter_parameters(self) -> dict:
         """Parameters to be passed to the HDF5 adapter, a dictionary with the keys:
 
-        dataset: list[str] - a path to the dataset within the hdf5 file represented as list split at `/`
+        dataset: str -- a path to the dataset within the hdf5 file
         swmr: bool -- True to enable the single writer / multiple readers regime
+        locking: Optional[bool] -- True to enable file locking, False to disable,
+            None to auto-detect (default)
+        slice: Optional[tuple[str, ...]] -- a tuple of slice strings to select a subset of the dataset
+        squeeze: bool -- whether to squeeze the dataset after slicing (default False)
         """
         params = {"dataset": self._sres_parameters["dataset"]}
         if slice := self._sres_parameters.get("slice", False):
@@ -507,12 +509,10 @@ class HDF5Consolidator(ConsolidatorBase):
 class MultipartRelatedConsolidator(ConsolidatorBase):
     def __init__(
         self,
-        permitted_extensions: set[str],
         stream_resource: StreamResource,
         descriptor: EventDescriptor,
     ):
         super().__init__(stream_resource, descriptor)
-        self.permitted_extensions: set[str] = permitted_extensions
         self.assets.clear()  # Assets will be populated based on datum indices
         self.data_uris: list[str] = []
         self.chunk_shape = self.chunk_shape or (
@@ -525,68 +525,9 @@ class MultipartRelatedConsolidator(ConsolidatorBase):
             )
 
         # Compile and set the filename template
-        self.template = self._compile_template(
+        self.template = compile_template(
             self._sres_parameters["template"], self._sres_parameters.get("filename", "")
         )
-
-    @staticmethod
-    def _compile_template(template: str, filename: str = "") -> str:
-        """Compile a filename template from old-style to new-style Python formatting
-
-        Parameters
-        ----------
-        template : str
-            An old-style Python formatting string, e.g. "%s%s_%06d.tif
-        filename : str
-            An optional filename to substitute for the first %s in the template.
-
-        Returns
-        -------
-            A new-style Python formatting string, e.g. "filename_{:06d}.tif"
-        """
-
-        def int_replacer(match):
-            """Normalize filename template
-
-            Replace an integer format specifier with a new-style format specifier,
-            i.e. convert the template string from "old" to "new" Python style,
-            e.g. "%s%s_%06d.tif" to "filename_{:06d}.tif"
-
-            """
-            flags, width, precision, type_char = match.groups()
-
-            # Handle the flags
-            flag_str = ""
-            if "-" in flags:
-                flag_str = "<"  # Left-align
-            if "+" in flags:
-                flag_str += "+"  # Show positive sign
-            elif " " in flags:
-                flag_str += " "  # Space before positive numbers
-            if "0" in flags:
-                flag_str += "0"  # Zero padding
-
-            # Build width and precision if they exist
-            width_str = width if width else ""
-            precision_str = f".{precision}" if precision else ""
-
-            # Handle cases like "%6.6d", which should be converted to "{:06d}"
-            if precision and width:
-                flag_str = "0"
-                precision_str = ""
-                width_str = str(max(precision, width))
-
-            # Construct the new-style format specifier
-            return f"{{:{flag_str}{width_str}{precision_str}{type_char}}}"
-
-        result = (
-            template.replace("%s", "{:s}", 1)
-            .replace("%s", "")
-            .replace("{:s}", filename, 1)
-        )
-        result = re.sub(r"%([-+#0 ]*)(\d+)?(?:\.(\d+))?([d])", int_replacer, result)
-
-        return result
 
     def get_datum_uri(self, indx: int):
         """Return a full uri for a datum (an individual image file) based on its index in the sequence.
@@ -600,8 +541,8 @@ class MultipartRelatedConsolidator(ConsolidatorBase):
         """
 
         if self.template:
-            assert os.path.splitext(self.template)[1] in self.permitted_extensions
             return self.uri + self.template.format(indx)
+
         return self.uri
 
     def consume_stream_datum(self, doc: StreamDatum):
@@ -641,23 +582,24 @@ class MultipartRelatedConsolidator(ConsolidatorBase):
         """Add an Asset for a new StreamResource document"""
 
         self._sres_parameters = stream_resource["parameters"]
-        self.template = self._compile_template(
+        self.template = compile_template(
             self._sres_parameters["template"], self._sres_parameters.get("filename", "")
         )
+
+
+class MultipartHDF5Consolidator(MultipartRelatedConsolidator):
+    supported_mimetypes = {"application/x-hdf5"}
+
+    def adapter_parameters(self) -> dict:
+        return HDF5Consolidator.adapter_parameters(self)
 
 
 class TIFFConsolidator(MultipartRelatedConsolidator):
     supported_mimetypes = {"multipart/related;type=image/tiff"}
 
-    def __init__(self, stream_resource: StreamResource, descriptor: EventDescriptor):
-        super().__init__({".tif", ".tiff"}, stream_resource, descriptor)
-
 
 class JPEGConsolidator(MultipartRelatedConsolidator):
     supported_mimetypes = {"multipart/related;type=image/jpeg"}
-
-    def __init__(self, stream_resource: StreamResource, descriptor: EventDescriptor):
-        super().__init__({".jpeg", ".jpg"}, stream_resource, descriptor)
 
 
 class NPYConsolidator(MultipartRelatedConsolidator):
@@ -676,7 +618,7 @@ class NPYConsolidator(MultipartRelatedConsolidator):
         data_key = stream_resource["data_key"]
         datum_shape = descriptor["data_keys"][data_key]["shape"]
         stream_resource["parameters"]["chunk_shape"] = (1, *datum_shape)
-        super().__init__({".npy"}, stream_resource, descriptor)
+        super().__init__(stream_resource, descriptor)
 
 
 CONSOLIDATOR_REGISTRY = collections.defaultdict(
