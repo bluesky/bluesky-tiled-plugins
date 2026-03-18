@@ -26,6 +26,7 @@ from tiled.client import record_history
 from examples.render import render_templated_documents
 
 from bluesky_tiled_plugins import TiledWriter
+from bluesky_tiled_plugins.writing.tiled_writer import EmptyTiledWriter
 
 
 class Named(HasName):
@@ -663,3 +664,32 @@ def test_internal_arrays_written_as_zarr(client, max_array_size, expected_scheme
         assert "long" not in run["primary"].base
         assert "long" in internal_table.columns
         assert run["primary"]["long"].data_sources() is None
+
+
+@pytest.mark.parametrize(
+    "fname", ["internal_events", "external_assets", "external_assets_legacy"]
+)
+def test_empty_tiled_writer(client, external_assets_folder, fname):
+    tw = EmptyTiledWriter(client, keep_keys={"my_custom_key", "nonexistent_key"})
+
+    for item in render_templated_documents(fname + ".json", external_assets_folder):
+        name, doc = item["name"], item["doc"]
+        if name == "start":
+            uid = doc["uid"]
+        tw(**item)
+
+    run = client[uid]
+
+    # The run should be created with the correct metadata, but no streams or events
+    assert "primary" not in run
+    assert len(run) == 0  # No subcontainers should be created
+
+    # Check the metadata of the run
+    assert set(run.metadata.keys()) == {"start", "stop"}
+    assert "time" in run.start
+    assert "scan_id" in run.start
+    assert "plan_args" not in run.start
+    assert "my_custom_key" in run.start
+    assert run.start["my_custom_key"] == "my_custom_value"
+    assert "nonexistent_key" not in run.start
+    assert "run_start" in run.stop

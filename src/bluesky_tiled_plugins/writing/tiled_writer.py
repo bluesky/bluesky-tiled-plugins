@@ -5,7 +5,7 @@ from collections import defaultdict, deque, namedtuple
 from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Optional, cast
 
 import numpy
 import pyarrow
@@ -1027,7 +1027,7 @@ class TiledWriter:
         max_array_size: int = MAX_ARRAY_SIZE,
         validate: bool = False,
     ):
-        """Callback for write metadata and data from Bluesky documents into Tiled.
+        """Callback for writing metadata and data from Bluesky documents into Tiled.
 
         This callback relies on the `RunRouter` to route documents from one or more runs into
         independent instances of the `_RunWriter` callback. The `RunRouter` is responsible for
@@ -1148,3 +1148,40 @@ class TiledWriter:
 
     def __call__(self, name, doc):
         self._run_router(name, doc)
+
+
+class EmptyTiledWriter:
+    STANDARD_START_KEYS = {"uid", "time", "scan_id", "tiled_access_tags"}
+
+    def __init__(self, client: BaseClient, *, keep_keys: Optional[set[str]] = None):
+        """A reduced callback for writing only Start and Stop documents into Tiled
+
+        This callback only creates a Tiled container for a run but does not write any data.
+        It is intended for registering the event of creating a Bluesky run itself, which
+        can be useful, for example, for triggering downstream workflows, assuming they would
+        fetch the data from external sources.
+
+        Parameters
+        ----------
+        client : `tiled.client.BaseClient`
+            The Tiled client to use for writing data. This client must be initialized with
+            the appropriate credentials and connection parameters to access the Tiled server.
+        keep_keys : Optional[set[str]]
+            A set of keys to keep in the Start document (in addition to `STANDARD_START_KEYS`).
+            All other keys will be removed before writing to Tiled.
+        """
+
+        self.client = client.include_data_sources()
+        self._keep_keys = self.STANDARD_START_KEYS.union(keep_keys or set())
+        self._run_router = RunRouter([self._factory])
+
+    def _factory(self, name, doc):
+        "Factory method to create a callback for writing a single run into Tiled."
+        return [_RunWriter(self.client)], []
+
+    def __call__(self, name, doc):
+        # Only process Start and Stop documents; drop unnecessary keys from the Start document
+        if name in {"start", "stop"}:
+            if name == "start":
+                doc = {k: v for k, v in doc.items() if k in self._keep_keys}
+            self._run_router(name, doc)

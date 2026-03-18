@@ -7,7 +7,8 @@
       "scan_id": 3,
       "plan_type": "generator",
       "plan_name": "count",
-      "detectors": ["det-obj1", "det-obj2"]
+      "detectors": ["det-obj1", "det-obj2"],
+      "my_custom_key": "my_custom_value"
     }
   },
   {
