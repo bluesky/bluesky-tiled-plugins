@@ -215,14 +215,22 @@ def validate_structure(data_client, fix_errors=False) -> list[str]:
     # the data is expected to be (num_events, multiplier, *rest) and needs to be adjusted
     if multiplier := data_client.metadata.get("frame_per_point"):
         if orig_shape[0] % multiplier != 0:
-            msg = ("Expected the leftmost dimension of the data to be divisible by the "
-                    f"`frame_per_point` multiplier of ({multiplier}), but got "
-                    f"shape {orig_shape}. Ignoring the multiplier parameter.")
+            msg = (
+                "Expected the leftmost dimension of the data to be divisible by the "
+                f"`frame_per_point` multiplier of ({multiplier}), but got "
+                f"shape {orig_shape}. Ignoring the multiplier parameter."
+            )
         else:
             true_shape = (orig_shape[0] // multiplier, multiplier, *orig_shape[1:])
-            true_chunks = (list_summands(true_shape[0], orig_chunks[0][0]), (multiplier,), *orig_chunks[1:])
-            msg = ("Adjusted shape and chunks accorging to the `frame_per_point` "
-                   f"multiplier of ({multiplier}): {orig_shape} -> {true_shape}")
+            true_chunks = (
+                list_summands(true_shape[0], orig_chunks[0][0]),
+                (multiplier,),
+                *orig_chunks[1:],
+            )
+            msg = (
+                "Adjusted shape and chunks accorging to the `frame_per_point` "
+                f"multiplier of ({multiplier}): {orig_shape} -> {true_shape}"
+            )
         logger.warning(msg)
         notes.append(msg)
 

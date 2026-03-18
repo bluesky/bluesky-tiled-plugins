@@ -158,7 +158,7 @@ class ConsolidatorBase:
             raise ValueError(
                 f"Chunk size in all dimensions must be at least 1: chunk_shape={self.chunk_shape}."
             )
-        
+
         # True chunking, if determined by the validator, is saved in data_source.properties
         self.orig_chunks: tuple[tuple[int, ...], ...] | None = None
 
@@ -361,19 +361,27 @@ class ConsolidatorBase:
         # the data is expected to be (num_events, multiplier, *rest) and needs to be adjusted
         if multiplier := self._sres_parameters.get("multiplier"):
             if structure.shape[0] % multiplier != 0:
-                msg = ("Expected the leftmost dimension of the data to be divisible by the "
-                        f"`frame_per_point` multiplier of ({multiplier}), but got "
-                        f"shape {structure.shape}. Ignoring the multiplier parameter.")
+                msg = (
+                    "Expected the leftmost dimension of the data to be divisible by the "
+                    f"`frame_per_point` multiplier of ({multiplier}), but got "
+                    f"shape {structure.shape}. Ignoring the multiplier parameter."
+                )
             else:
                 orig_shape, self.orig_chunks = structure.shape, structure.chunks
-                structure.shape = (orig_shape[0] // multiplier, multiplier, *orig_shape[1:])
+                structure.shape = (
+                    orig_shape[0] // multiplier,
+                    multiplier,
+                    *orig_shape[1:],
+                )
                 structure.chunks = (
                     list_summands(structure.shape[0], self.orig_chunks[0][0]),
                     (multiplier,),
                     *self.orig_chunks[1:],
                 )
-                msg = ("Adjusted shape and chunks accorging to the `frame_per_point` "
-                      f"multiplier of ({multiplier}): {orig_shape} -> {structure.shape}")
+                msg = (
+                    "Adjusted shape and chunks accorging to the `frame_per_point` "
+                    f"multiplier of ({multiplier}): {orig_shape} -> {structure.shape}"
+                )
             warnings.warn(msg, stacklevel=2)
             notes.append(msg)
 
