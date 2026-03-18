@@ -1173,6 +1173,7 @@ class EmptyTiledWriter:
 
         self.client = client.include_data_sources()
         self._keep_keys = self.STANDARD_START_KEYS.union(keep_keys or set())
+        self._run_router = RunRouter([self._factory])
 
     def _factory(self, name, doc):
         "Factory method to create a callback for writing a single run into Tiled."

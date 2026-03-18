@@ -11,7 +11,8 @@
         ],
         "num": 3,
         "delay": 0.0
-      }
+      },
+      "my_custom_key": "my_custom_value"
     }
   },
   {
