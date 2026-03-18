@@ -1179,16 +1179,6 @@ class EmptyTiledWriter:
         "Factory method to create a callback for writing a single run into Tiled."
         return [_RunWriter(self.client)], []
 
-    @classmethod
-    def from_uri(cls, uri, *, keep_keys: Optional[set[str]] = None, **kwargs):
-        client = from_uri(uri, **kwargs)
-        return cls(client, keep_keys=keep_keys)
-
-    @classmethod
-    def from_profile(cls, profile, *, keep_keys: Optional[set[str]] = None, **kwargs):
-        client = from_profile(profile, **kwargs)
-        return cls(client, keep_keys=keep_keys)
-
     def __call__(self, name, doc):
         # Only process Start and Stop documents; drop unnecessary keys from the Start document
         if name in {"start", "stop"}:
