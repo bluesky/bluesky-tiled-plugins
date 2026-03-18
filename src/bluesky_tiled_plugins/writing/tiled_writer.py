@@ -1167,8 +1167,8 @@ class EmptyTiledWriter:
             The Tiled client to use for writing data. This client must be initialized with
             the appropriate credentials and connection parameters to access the Tiled server.
         keep_keys : Optional[set[str]]
-            A set of keys to keep in the Start document (in addition to `start_keys`). All
-            other keys will be removed before writing to Tiled.
+            A set of keys to keep in the Start document (in addition to `STANDARD_START_KEYS`).
+            All other keys will be removed before writing to Tiled.
         """
 
         self.client = client.include_data_sources()
