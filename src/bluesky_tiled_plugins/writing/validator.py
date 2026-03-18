@@ -9,6 +9,7 @@ from tiled.client.dataframe import DataFrameClient
 from tiled.client.utils import handle_error, retry_context
 from tiled.mimetypes import DEFAULT_ADAPTERS_BY_MIMETYPE as ADAPTERS_BY_MIMETYPE
 from tiled.utils import safe_json_dump
+from ..utils import list_summands
 
 logger = logging.getLogger(__name__)
 
@@ -207,8 +208,23 @@ def validate_structure(data_client, fix_errors=False) -> list[str]:
         *uris, **data_source.parameters
     ).structure()
     true_data_type = true_structure.data_type
-    true_shape = true_structure.shape
-    true_chunks = true_structure.chunks
+    true_shape = orig_shape = true_structure.shape
+    true_chunks = orig_chunks = true_structure.chunks
+
+    # If this resource has the `frame_per_point`/`multiplier` parameter, the true shape of
+    # the data is expected to be (num_events, multiplier, *rest) and needs to be adjusted
+    if multiplier := data_client.metadata.get("frame_per_point"):
+        if orig_shape[0] % multiplier != 0:
+            msg = ("Expected the leftmost dimension of the data to be divisible by the "
+                    f"`frame_per_point` multiplier of ({multiplier}), but got "
+                    f"shape {orig_shape}. Ignoring the multiplier parameter.")
+        else:
+            true_shape = (orig_shape[0] // multiplier, multiplier, *orig_shape[1:])
+            true_chunks = (list_summands(true_shape[0], orig_chunks[0][0]), (multiplier,), *orig_chunks[1:])
+            msg = ("Adjusted shape and chunks accorging to the `frame_per_point` "
+                   f"multiplier of ({multiplier}): {orig_shape} -> {true_shape}")
+        logger.warning(msg)
+        notes.append(msg)
 
     # Validate structure components
     if structure.shape != true_shape:

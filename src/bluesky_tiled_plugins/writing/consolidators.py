@@ -11,13 +11,7 @@ from tiled.mimetypes import DEFAULT_ADAPTERS_BY_MIMETYPE
 from tiled.structures.array import ArrayStructure, BuiltinDtype, StructDtype
 from tiled.structures.core import StructureFamily
 from tiled.structures.data_source import Asset, DataSource, Management
-
-
-def list_summands(A: int, b: int, repeat: int = 1) -> tuple[int, ...]:
-    # Generate a list with repeated b summing up to A; append the remainder if necessary
-    # e.g. list_summands(13, 3) = [3, 3, 3, 3, 1]
-    # if `repeat = n`, n > 1, copy and repeat the entire result n times
-    return tuple([b] * (A // b) + ([A % b] if A % b > 0 else [])) * repeat or (0,)
+from ..utils import list_summands
 
 
 @dataclasses.dataclass
@@ -116,6 +110,9 @@ class ConsolidatorBase:
         ]
         self._sres_parameters = stream_resource["parameters"]
 
+        # Any metadata to be set on the corresponding node in Tiled
+        self.metadata: dict = {}
+
         # Find datum shape and machine dtype
         data_desc = descriptor["data_keys"][self.data_key]
         if None in data_desc["shape"]:
@@ -133,6 +130,7 @@ class ConsolidatorBase:
 
         # Check that the datum shape is consistent between the StreamResource and the Descriptor
         if multiplier := self._sres_parameters.get("multiplier"):
+            self.metadata["frame_per_point"] = multiplier
             self.datum_shape = self.datum_shape or (
                 multiplier,
             )  # If datum_shape is not set
@@ -160,14 +158,16 @@ class ConsolidatorBase:
             raise ValueError(
                 f"Chunk size in all dimensions must be at least 1: chunk_shape={self.chunk_shape}."
             )
+        
+        # True chunking, if determined by the validator, is saved in data_source.properties
+        self.orig_chunks: tuple[tuple[int, ...], ...] | None = None
 
         # Possibly overwrite the join_method and join_chunks attributes
         self.join_method = self._sres_parameters.get("join_method", self.join_method)
         self.join_chunks = self._sres_parameters.get("join_chunks", self.join_chunks)
 
-        self._num_rows: int = (
-            0  # Number of rows in the Data Source (all rows, includung skips)
-        )
+        # Number of rows in the Data Source (all rows, includung skips)
+        self._num_rows: int = 0
         self._seqnums_to_indices_map: dict[int, int] = {}
 
         # Set the dimension names if provided
@@ -315,6 +315,7 @@ class ConsolidatorBase:
             structure_family=StructureFamily.array,
             structure=self.structure(),
             parameters=self.adapter_parameters(),
+            properties={"chunks": self.orig_chunks} if self.orig_chunks else {},
             management=Management.external,
         )
 
@@ -355,6 +356,26 @@ class ConsolidatorBase:
             *uris, **self.adapter_parameters()
         ).structure()
         notes = []
+
+        # If this resource has the `frame_per_point`/`multiplier` parameter, the true shape of
+        # the data is expected to be (num_events, multiplier, *rest) and needs to be adjusted
+        if multiplier := self._sres_parameters.get("multiplier"):
+            if structure.shape[0] % multiplier != 0:
+                msg = ("Expected the leftmost dimension of the data to be divisible by the "
+                        f"`frame_per_point` multiplier of ({multiplier}), but got "
+                        f"shape {structure.shape}. Ignoring the multiplier parameter.")
+            else:
+                orig_shape, self.orig_chunks = structure.shape, structure.chunks
+                structure.shape = (orig_shape[0] // multiplier, multiplier, *orig_shape[1:])
+                structure.chunks = (
+                    list_summands(structure.shape[0], self.orig_chunks[0][0]),
+                    (multiplier,),
+                    *self.orig_chunks[1:],
+                )
+                msg = ("Adjusted shape and chunks accorging to the `frame_per_point` "
+                      f"multiplier of ({multiplier}): {orig_shape} -> {structure.shape}")
+            warnings.warn(msg, stacklevel=2)
+            notes.append(msg)
 
         if self.shape != structure.shape:
             if not fix_errors:
