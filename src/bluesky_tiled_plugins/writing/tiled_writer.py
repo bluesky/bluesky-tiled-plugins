@@ -877,9 +877,9 @@ class _RunWriter(DocumentRouter):
                 # the data structure locally with the Consolidator.
 
                 if response.status_code == httpx.codes.NOT_FOUND:
-                    logger.warning(
-                        "Server does not support validation endpoint; "
-                        "attempting to validate the data structure locally."
+                    warnings.warn(
+                        "Tiled server does not support remote validation. "
+                        "Attempting to validate the data structure locally."
                     )
                     for sres_node, consolidator in node_and_cons:
                         title = f"Validation of data key '{sres_node.item['id']}'"
