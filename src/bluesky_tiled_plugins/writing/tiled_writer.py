@@ -882,7 +882,7 @@ class _RunWriter(DocumentRouter):
                         "Attempting to validate the data structure locally."
                     )
                     for sres_node, consolidator in node_and_cons:
-                        title = f"Validation of data key '{sres_node.item['id']}'"
+                        title = f"Validation of '{sres_node.item['id']}'"
                         try:
                             _notes = consolidator.validate(fix_errors=True)
                             self.notes.extend([title + ": " + note for note in _notes])
