@@ -2,13 +2,14 @@ import logging
 import re
 import time
 import copy
+import collections
 from dataclasses import asdict
 from packaging.version import Version
 
 from tiled.client.array import ArrayClient
 from tiled.client.dataframe import DataFrameClient
 from tiled.client.utils import handle_error, retry_context
-from tiled.mimetypes import DEFAULT_ADAPTERS_BY_MIMETYPE as ADAPTERS_BY_MIMETYPE
+from tiled.mimetypes import DEFAULT_ADAPTERS_BY_MIMETYPE
 from tiled.utils import safe_json_dump
 from tiled.structures.core import STRUCTURE_TYPES
 from tiled.structures.data_source import DataSource
@@ -169,9 +170,7 @@ def validate_reading(data_client, ignore_errors=[]):
             if any([re.search(msg, str(e)) for msg in ignore_errors]):
                 logger.info(f"Ignoring array reading error: {sname}/{data_key}: {e}")
             else:
-                raise ReadingValidationException(
-                    f"Array reading failed with error: {e}"
-                )
+                raise ReadingValidationException(f"Array reading failed with error: {e}")
 
     elif isinstance(data_client, DataFrameClient):
         try:
@@ -180,9 +179,7 @@ def validate_reading(data_client, ignore_errors=[]):
             if any([re.search(msg, str(e)) for msg in ignore_errors]):
                 logger.info(f"Ignoring table reading error: {sname}/{data_key}: {e}")
             else:
-                raise ReadingValidationException(
-                    f"Table reading failed with error: {e}"
-                )
+                raise ReadingValidationException(f"Table reading failed with error: {e}")
 
     else:
         logger.warning(
@@ -238,7 +235,7 @@ def validate_structure(data_client, fix_errors=False) -> list[str]:
 
 
 def validate_data_source(
-    data_source, fix_errors=False, metadata=None
+    data_source, fix_errors=False, metadata=None, adapters_by_mimetype=None
 ) -> tuple[DataSource, list[str]]:
     """Validate and optionally fix the structure of a data_source
 
@@ -263,7 +260,8 @@ def validate_data_source(
         )
 
     # Find an appropriate adapter for this data source and apply custom validation logic
-    adapter_class = ADAPTERS_BY_MIMETYPE[data_source.mimetype]
+    adapters_by_mimetype = collections.ChainMap(adapters_by_mimetype or {}, DEFAULT_ADAPTERS_BY_MIMETYPE)
+    adapter_class = adapters_by_mimetype[data_source.mimetype]
     if hasattr(adapter_class, "validate_data_source"):
         data_source, notes = adapter_class.validate_data_source(
             data_source, fix_errors=fix_errors

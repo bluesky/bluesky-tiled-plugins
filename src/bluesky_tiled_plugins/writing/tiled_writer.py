@@ -897,8 +897,8 @@ class _RunWriter(DocumentRouter):
                             sres_node, consolidator.get_data_source()
                         )
                 else:
-                    msg = "Remote validation request failed with status code "
-                    f"{response.status_code}: {response.text}"
+                    msg = ("Remote validation request failed with status code "
+                    f"{response.status_code}: {response.text}")
                     raise ValidationError(msg) from e
 
         # Write the stop document to the metadata, include notes from the normalizer, if any

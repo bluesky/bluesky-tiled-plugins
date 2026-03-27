@@ -95,6 +95,7 @@ async def validate_structure_operation(
                             data_source,
                             fix_errors=fix_errors,
                             metadata=dkey_node.metadata(),
+                            adapters_by_mimetype=entry.context.adapters_by_mimetype,
                         )
                         notes.extend(
                             [
