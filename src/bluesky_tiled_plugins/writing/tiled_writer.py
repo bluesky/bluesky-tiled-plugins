@@ -7,6 +7,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, cast
 
+import httpx
 import numpy
 import pyarrow
 from event_model import (
@@ -837,30 +838,65 @@ class _RunWriter(DocumentRouter):
                 sres_node, consolidator.get_data_source(), patch=final_patch
             )
 
-        # Update the metadata and validate structure for some StreamResource nodes
         # Select unique pairs of (sres_node, consolidator)
         node_and_cons = {
             (sres_node, self._consolidators[sres_uid])
             for sres_uid, sres_node in self._sres_nodes.items()
         }
+        # If there is any metadata on this consolidator (e.g. `frame_per_point`), update the node
         for sres_node, consolidator in node_and_cons:
-            if self._validate:
-                title = f"Validation of data key '{sres_node.item['id']}'"
-                try:
-                    _notes = consolidator.validate(fix_errors=True)
-                    self.notes.extend([title + ": " + note for note in _notes])
-                except Exception as e:
-                    msg = (
-                        f"{type(e).__name__}: "
-                        + str(e).replace("\n", " ").replace("\r", "").strip()
-                    )
-                    msg = title + f" failed with error: {msg}"
-                    raise ValidationError(msg) from e
-                self._update_data_source_for_node(
-                    sres_node, consolidator.get_data_source()
-                )
             if cons_md := consolidator.metadata:
                 sres_node.update_metadata(metadata=cons_md, drop_revision=True)
+
+        # Validate the Structure of the data for each external resource, if requested
+        # Try validating directly on the server, first; if endpoint is not available, do it locally
+        if self._validate:
+            for attempt in retry_context():
+                with attempt:
+                    response = self.root_node.context.http_client.get(
+                        self.root_node.uri.replace("/metadata/", "/validate/", 1),
+                        params={"fix": ",".join(map(str, patch.shape))},
+                    )
+            try:
+                content = handle_error(response).json()
+                if content.get("valid"):
+                    logger.info("Remote validation successful for all external data.")
+                    self.notes.extend(content.get("notes", []))
+                else:
+                    msg = "Remote validation failed: " + "; ".join(
+                        content.get("notes", [])
+                    )
+                    raise ValidationError(msg)
+
+            except httpx.HTTPStatusError as e:
+                # Backcompatibility: if the server does not support validation endpoint,
+                # it will return 404 Not Found error; in this case, attempt to validate
+                # the data structure locally with the Consolidator.
+
+                if response.status_code == httpx.codes.NOT_FOUND:
+                    logger.warning(
+                        "Server does not support validation endpoint; "
+                        "attempting to validate the data structure locally."
+                    )
+                    for sres_node, consolidator in node_and_cons:
+                        title = f"Validation of data key '{sres_node.item['id']}'"
+                        try:
+                            _notes = consolidator.validate(fix_errors=True)
+                            self.notes.extend([title + ": " + note for note in _notes])
+                        except Exception as e:
+                            msg = (
+                                f"{type(e).__name__}: "
+                                + str(e).replace("\n", " ").replace("\r", "").strip()
+                            )
+                            msg = title + f" failed with error: {msg}"
+                            raise ValidationError(msg) from e
+                        self._update_data_source_for_node(
+                            sres_node, consolidator.get_data_source()
+                        )
+                else:
+                    msg = "Remote validation request failed with status code "
+                    f"{response.status_code}: {response.text}"
+                    raise ValidationError(msg) from e
 
         # Write the stop document to the metadata, include notes from the normalizer, if any
         notes = doc.pop("_run_normalizer_notes", []) + self.notes

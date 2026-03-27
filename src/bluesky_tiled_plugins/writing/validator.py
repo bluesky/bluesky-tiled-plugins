@@ -11,10 +11,7 @@ from tiled.client.utils import handle_error, retry_context
 from tiled.mimetypes import DEFAULT_ADAPTERS_BY_MIMETYPE as ADAPTERS_BY_MIMETYPE
 from tiled.utils import safe_json_dump
 from ..utils import list_summands
-from collections import Counter
-from typing import Callable
 
-from tiled.structures.core import Spec, StructureFamily
 
 logger = logging.getLogger(__name__)
 
@@ -238,7 +235,9 @@ def validate_data_source(data_source, fix_errors=False, metadata=None) -> list[s
     # Validate structure components
     if structure.shape != true_shape:
         if not fix_errors:
-            raise StructureValidationException(f"Shape mismatch: {structure.shape} != {true_shape}")
+            raise StructureValidationException(
+                f"Shape mismatch: {structure.shape} != {true_shape}"
+            )
         else:
             msg = f"Fixed shape mismatch: {structure.shape} -> {true_shape}"
             structure.shape = true_shape
@@ -307,7 +306,11 @@ def validate_structure(data_client, fix_errors=False) -> list[str]:
     """
 
     try:
-        valid_data_source, notes = validate_data_source(data_source = data_client.data_sources()[0], fix_errors=fix_errors, metadata=data_client.metadata)
+        valid_data_source, notes = validate_data_source(
+            data_source=data_client.data_sources()[0],
+            fix_errors=fix_errors,
+            metadata=data_client.metadata,
+        )
     except StructureValidationException as e:
         return [f"Structure validation error: {e}"]
 
