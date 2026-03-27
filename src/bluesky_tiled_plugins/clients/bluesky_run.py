@@ -257,7 +257,7 @@ class _BlueskyRunSQL(BlueskyRun):
         2. The specs of the "streams" container do not include "BlueskyEventStream",
            indicating that "streams" is not itself a BlueskyEventStream.
         """
-        return ("streams" in self.base) and (
+        return ("streams" in self.base.keys()) and (
             "BlueskyEventStream" not in {s.name for s in self.base["streams"].specs}
         )
 
