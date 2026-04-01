@@ -856,7 +856,7 @@ class _RunWriter(DocumentRouter):
                 with attempt:
                     response = self.root_node.context.http_client.get(
                         self.root_node.uri.replace("/metadata/", "/validate/", 1),
-                        params={"fix_errors": True},
+                        params={"fix": True},
                     )
 
             try:
