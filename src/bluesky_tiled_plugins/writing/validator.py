@@ -10,6 +10,7 @@ from tiled.client.dataframe import DataFrameClient
 from tiled.client.utils import handle_error, retry_context
 from tiled.mimetypes import DEFAULT_ADAPTERS_BY_MIMETYPE as ADAPTERS_BY_MIMETYPE
 from tiled.utils import safe_json_dump
+from tiled.structures.array import StructDtype
 from tiled.structures.core import STRUCTURE_TYPES
 from tiled.structures.data_source import DataSource
 from ..utils import list_summands
@@ -322,6 +323,9 @@ def validate_data_source(
             raise StructureValidationException(
                 f"Data type mismatch: {structure.data_type} != {true_data_type}"
             )
+        elif isinstance(structure.data_type, StructDtype):
+            # TODO: implement proper handling of Structured dtype conversions
+            pass
         else:
             msg = (
                 f"Fixed dtype mismatch: {structure.data_type.to_numpy_dtype()} "
