@@ -171,7 +171,9 @@ def validate_reading(data_client, ignore_errors=[]):
             if any([re.search(msg, str(e)) for msg in ignore_errors]):
                 logger.info(f"Ignoring array reading error: {sname}/{data_key}: {e}")
             else:
-                raise ReadingValidationException(f"Array reading failed with error: {e}")
+                raise ReadingValidationException(
+                    f"Array reading failed with error: {e}"
+                )
 
     elif isinstance(data_client, DataFrameClient):
         try:
@@ -180,7 +182,9 @@ def validate_reading(data_client, ignore_errors=[]):
             if any([re.search(msg, str(e)) for msg in ignore_errors]):
                 logger.info(f"Ignoring table reading error: {sname}/{data_key}: {e}")
             else:
-                raise ReadingValidationException(f"Table reading failed with error: {e}")
+                raise ReadingValidationException(
+                    f"Table reading failed with error: {e}"
+                )
 
     else:
         logger.warning(
@@ -261,7 +265,9 @@ def validate_data_source(
         )
 
     # Find an appropriate adapter for this data source and apply custom validation logic
-    adapters_by_mimetype = collections.ChainMap(adapters_by_mimetype or {}, DEFAULT_ADAPTERS_BY_MIMETYPE)
+    adapters_by_mimetype = collections.ChainMap(
+        adapters_by_mimetype or {}, DEFAULT_ADAPTERS_BY_MIMETYPE
+    )
     adapter_class = adapters_by_mimetype[data_source.mimetype]
     if hasattr(adapter_class, "validate_data_source"):
         data_source, notes = adapter_class.validate_data_source(
