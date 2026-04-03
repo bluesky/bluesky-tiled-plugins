@@ -4,6 +4,7 @@ import time
 import copy
 import collections
 from dataclasses import asdict
+import numpy
 from packaging.version import Version
 
 from tiled.client.array import ArrayClient
@@ -11,7 +12,7 @@ from tiled.client.dataframe import DataFrameClient
 from tiled.client.utils import handle_error, retry_context
 from tiled.mimetypes import DEFAULT_ADAPTERS_BY_MIMETYPE
 from tiled.utils import safe_json_dump
-from tiled.structures.array import StructDtype
+from tiled.structures.array import StructDtype, BuiltinDtype
 from tiled.structures.core import STRUCTURE_TYPES
 from tiled.structures.data_source import DataSource
 from ..utils import list_summands
@@ -305,38 +306,63 @@ def validate_data_source(
             raise StructureValidationException(
                 f"Shape mismatch: {structure.shape} != {true_shape}"
             )
-        else:
-            msg = f"Fixed shape mismatch: {structure.shape} -> {true_shape}"
-            structure.shape = true_shape
-            notes.append(msg)
+
+        msg = f"Fixed shape mismatch: {structure.shape} -> {true_shape}"
+        structure.shape = true_shape
+        notes.append(msg)
 
     if structure.chunks != true_chunks:
         if not fix_errors:
             raise StructureValidationException(
                 f"Chunk shape mismatch: {structure.chunks} != {true_chunks}"
             )
-        else:
-            _true_chunk_shape = tuple(c[0] for c in true_chunks)
-            _chunk_shape = tuple(c[0] for c in structure.chunks)
-            msg = f"Fixed chunk shape mismatch: {_chunk_shape} -> {_true_chunk_shape}"
-            structure.chunks = true_chunks
-            notes.append(msg)
+
+        _true_chunk_shape = tuple(c[0] for c in true_chunks)
+        _chunk_shape = tuple(c[0] for c in structure.chunks)
+        msg = f"Fixed chunk shape mismatch: {_chunk_shape} -> {_true_chunk_shape}"
+        structure.chunks = true_chunks
+        notes.append(msg)
 
     if structure.data_type != true_data_type:
         if not fix_errors:
             raise StructureValidationException(
                 f"Data type mismatch: {structure.data_type} != {true_data_type}"
             )
+
         elif isinstance(structure.data_type, StructDtype):
-            # TODO: implement proper handling of Structured dtype conversions
-            pass
-        else:
-            msg = (
-                f"Fixed dtype mismatch: {structure.data_type.to_numpy_dtype()} "
-                f"-> {true_data_type.to_numpy_dtype()}"
-            )
-            structure.data_type = true_data_type
-            notes.append(msg)
+            npdt_s = structure.data_type.to_numpy_dtype()
+            npdt_t = true_data_type.to_numpy_dtype()
+            if isinstance(true_data_type, StructDtype):
+                # Both are structural dtypes: use names from structure, dtypes from file
+                if len(npdt_s.names) != len(npdt_t.names):
+                    raise StructureValidationException(
+                        f"Number of fields mismatch in structured dtype: {len(npdt_s.names)} != {len(npdt_t.names)}"  # noqa
+                    )
+                fields = [
+                    (n, f[0]) for n, f in zip(npdt_s.names, npdt_t.fields.values())
+                ]
+
+            elif isinstance(true_data_type, BuiltinDtype):
+                # All columns appear to be of the same dtype, but expected structured
+                if len(npdt_s.names) != structure.shape[-1]:
+                    raise StructureValidationException(
+                        f"Number of fields mismatch in structured dtype: {len(npdt_s.names)} != {structure.shape[-1]}"  # noqa
+                    )
+                fields = [(n, npdt_t) for n in npdt_s.names]
+
+            true_data_type = StructDtype.from_numpy_dtype(numpy.dtype(fields))
+
+        elif isinstance(true_data_type, StructDtype):
+            # Expected a simple builtin dtype, but the file was parsed as structured;
+            # try to cast as BuiltinDtype if possible (common dtype that matches all fields)
+            npdt_t = true_data_type.to_numpy_dtype()
+            common_dtype = numpy.result_type(*[f[0] for f in npdt_t.fields.values()])
+            true_data_type = BuiltinDtype.from_numpy_dtype(common_dtype)
+
+        # Both structure and file have simple built-in dtypes: just use the file dtype
+        msg = f"Fixed dtype mismatch: {structure.data_type.to_numpy_dtype()} -> {true_data_type.to_numpy_dtype()}"  # noqa
+        structure.data_type = true_data_type
+        notes.append(msg)
 
     if structure.dims and (len(structure.dims) != len(true_shape)):
         if not fix_errors:
@@ -344,19 +370,17 @@ def validate_data_source(
                 "Number of dimension names mismatch for a "
                 f"{len(true_shape)}-dimensional array: {structure.dims}"
             )
+
+        old_dims = structure.dims
+        if len(old_dims) < len(true_shape):
+            structure.dims = (
+                ("time",)
+                + old_dims
+                + tuple(f"dim{i}" for i in range(len(old_dims) + 1, len(true_shape)))
+            )
         else:
-            old_dims = structure.dims
-            if len(old_dims) < len(true_shape):
-                structure.dims = (
-                    ("time",)
-                    + old_dims
-                    + tuple(
-                        f"dim{i}" for i in range(len(old_dims) + 1, len(true_shape))
-                    )
-                )
-            else:
-                structure.dims = old_dims[: len(true_shape)]
-            msg = f"Fixed dimension names: {old_dims} -> {structure.dims}"
-            notes.append(msg)
+            structure.dims = old_dims[: len(true_shape)]
+        msg = f"Fixed dimension names: {old_dims} -> {structure.dims}"
+        notes.append(msg)
 
     return data_source, notes
