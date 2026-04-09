@@ -48,7 +48,7 @@ def validate(
     fix_errors=True,
     try_reading=True,
     raise_on_error=False,
-    ignore_errors=[],
+    ignore_errors=None,
 ):
     """Validate the given BlueskyRun client for completeness and data integrity.
 
@@ -67,8 +67,7 @@ def validate(
         Whether to raise an exception on the first validation error encountered.
         Default is False.
     ignore_errors : list of str, optional
-        List of error messages to ignore during reading validation.
-        Default is an empty list.
+        List of error messages to ignore during validation. Default is an empty list.
 
     Returns
     -------
@@ -84,6 +83,7 @@ def validate(
 
     # Check all streams and data keys
     errored_keys, notes = [], []
+    ignore_errors = ignore_errors or []
     streams_node = (
         root_client["streams"] if "streams" in root_client.keys() else root_client
     )
@@ -108,20 +108,24 @@ def validate(
                 )
                 msg = title + f" failed with error: {msg}"
                 logger.error(msg)
-                if raise_on_error:
+                if any(re.search(ptrn, str(e)) for ptrn in ignore_errors):
+                    logger.warning(f"Ignored validation error: {e}")
+                elif raise_on_error:
                     raise e
                 notes.append(msg)
 
             # Validate reading of the data
             if try_reading:
                 try:
-                    validate_reading(data_client, ignore_errors=ignore_errors)
+                    validate_reading(data_client)
                 except Exception as e:
                     errored_keys.append((sname, data_key, str(e)))
                     logger.error(
                         f"Reading validation of '{sname}/{data_key}' failed with error: {e}"
                     )
-                    if raise_on_error:
+                    if any(re.search(ptrn, str(e)) for ptrn in ignore_errors):
+                        logger.warning(f"Ignored reading validation error: {e}")
+                    elif raise_on_error:
                         raise e
 
             time.sleep(0.1)
@@ -141,25 +145,19 @@ def validate(
     return not errored_keys
 
 
-def validate_reading(data_client, ignore_errors=[]):
+def validate_reading(data_client):
     """Attempt to read data from the given data client to validate data accessibility
 
     Parameters
     ----------
         data_client : tiled.client.ArrayClient or tiled.client.DataFrameClient
             The data client to validate reading from.
-        ignore_errors : list of str, optional
-            List of error messages to ignore during reading validation.
-            Default is an empty list.
 
     Raises
     ------
         ReadingValidationException
             If reading the data fails with an unignored error.
     """
-
-    data_key = data_client.item["id"]
-    sname = data_client.item["attributes"]["ancestors"][-1]  # stream name
 
     if isinstance(data_client, ArrayClient):
         try:
@@ -169,25 +167,16 @@ def validate_reading(data_client, ignore_errors=[]):
             idx_right_bottom = (-1,) * len(data_client.shape)
             data_client[idx_right_bottom]
         except Exception as e:
-            if any([re.search(msg, str(e)) for msg in ignore_errors]):
-                logger.info(f"Ignoring array reading error: {sname}/{data_key}: {e}")
-            else:
-                raise ReadingValidationException(
-                    f"Array reading failed with error: {e}"
-                )
+            raise ReadingValidationException(f"Array reading failed with error: {e}")
 
     elif isinstance(data_client, DataFrameClient):
         try:
             data_client.read()  # try to read the entire table
         except Exception as e:
-            if any([re.search(msg, str(e)) for msg in ignore_errors]):
-                logger.info(f"Ignoring table reading error: {sname}/{data_key}: {e}")
-            else:
-                raise ReadingValidationException(
-                    f"Table reading failed with error: {e}"
-                )
+            raise ReadingValidationException(f"Table reading failed with error: {e}")
 
     else:
+        data_key = data_client.item["id"]
         logger.warning(
             f"Validation of '{data_key=}' is not supported with client of type {type(data_client)}."
         )

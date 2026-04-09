@@ -4,6 +4,7 @@ from collections.abc import Iterator
 from typing import cast
 from urllib.parse import parse_qs, urlparse
 
+
 import bluesky.plan_stubs as bps
 import bluesky.plans as bp
 import h5py
@@ -26,6 +27,7 @@ from tiled.client import record_history
 from examples.render import render_templated_documents
 
 from bluesky_tiled_plugins import TiledWriter
+from bluesky_tiled_plugins.writing.validator import ValidationException
 
 
 class Named(HasName):
@@ -458,6 +460,50 @@ def test_validate_external_data(client, external_assets_folder, error_type, vali
         assert run["primary"].read() is not None
         assert run["primary"]["det-key2"].read().shape == (3, 13, 17)
         assert run["primary"]["det-key2"].structure().dims == ("time", "dim_2", "dim_3")
+
+
+@pytest.mark.parametrize(
+    "ignore_errors",
+    (
+        None,
+        [],
+        ["FileNotFoundError", "No such file or directory"],
+        [r"(?i)Unable to synchronously open", "some other pattern that won't match"],
+    ),
+)
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_ignore_validation_errors(client, external_assets_folder, ignore_errors):
+    tw = TiledWriter(client, validate=True, ignore_errors=ignore_errors)
+
+    documents = render_templated_documents(
+        "external_assets_single_key.json", external_assets_folder
+    )
+    for item in documents:
+        name, doc = item["name"], item["doc"]
+        if name == "start":
+            uid = doc["uid"]
+
+        # Corrupt the URI to trigger a validation error
+        if name == "stream_resource":
+            doc["uri"] += "_"
+
+        #
+        if name == "stop":
+            if ignore_errors:
+                tw(name, doc)  # Should not raise due to ignored error
+            else:
+                with pytest.raises(ValidationException):
+                    tw(name, doc)
+        else:
+            tw(name, doc)
+
+    # Check that the data has been written, but is not readable due to the corrupted URI
+    assert uid in client
+    run = client[uid]
+    if ignore_errors:
+        assert run.stop is not None
+    else:
+        assert "stop" not in run.metadata
 
 
 @pytest.mark.parametrize("squeeze", [True, False])
