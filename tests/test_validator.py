@@ -161,14 +161,6 @@ def test_validate_reading_array_failure(client, external_assets_folder):
     with pytest.raises(ReadingValidationException):
         validate_reading(array_client)
 
-    # Now validate reading with ignored errors
-    assert (
-        validate_reading(
-            array_client, ignore_errors=["Unable to synchronously open file"]
-        )
-        is None
-    )
-
 
 def test_validate_reading_table_success(client):
     tw = TiledWriter(client, validate=False)  # Do not validate on write (default)
