@@ -296,6 +296,10 @@ class RunNormalizer(DocumentRouter):
                     existing_dataset or "/entry/instrument/detector/data"
                 )
 
+        # Rename "frame_per_point" to a more recent (yet also deprecated) "multiplier"
+        if val := stream_resource_doc["parameters"].pop("frame_per_point", None):
+            stream_resource_doc["parameters"]["multiplier"] = val
+
         # Ensure that the internal path within HDF5 files is referenced with "dataset" parameter
         if stream_resource_doc["mimetype"] == "application/x-hdf5":
             stream_resource_doc["parameters"]["dataset"] = stream_resource_doc[
@@ -762,9 +766,8 @@ class _RunWriter(DocumentRouter):
         self, node: BaseClient, data_source: DataSource, patch: Patch | None = None
     ):
         """Update DataSource of the node in Tiled corresponding to the StreamResource"""
-        data_source.id = node.data_sources()[
-            0
-        ].id  # ID of the existing DataSource record
+        # Get and set the ID of the existing DataSource record
+        data_source.id = node.data_sources()[0].id
 
         # Backompatibility: if the server is older than 0.2.4,
         # it can not accept the "properties" field in the data source.
@@ -834,13 +837,14 @@ class _RunWriter(DocumentRouter):
                 sres_node, consolidator.get_data_source(), patch=final_patch
             )
 
-        # Validate structure for some StreamResource nodes, select unique pairs of (sres_node, consolidator)
+        # Update the metadata and validate structure for some StreamResource nodes
+        # Select unique pairs of (sres_node, consolidator)
         node_and_cons = {
             (sres_node, self._consolidators[sres_uid])
             for sres_uid, sres_node in self._sres_nodes.items()
         }
-        if self._validate:
-            for sres_node, consolidator in node_and_cons:
+        for sres_node, consolidator in node_and_cons:
+            if self._validate:
                 title = f"Validation of data key '{sres_node.item['id']}'"
                 try:
                     _notes = consolidator.validate(fix_errors=True)
@@ -855,6 +859,8 @@ class _RunWriter(DocumentRouter):
                 self._update_data_source_for_node(
                     sres_node, consolidator.get_data_source()
                 )
+            if cons_md := consolidator.metadata:
+                sres_node.update_metadata(metadata=cons_md, drop_revision=True)
 
         # Write the stop document to the metadata, include notes from the normalizer, if any
         notes = doc.pop("_run_normalizer_notes", []) + self.notes

@@ -44,7 +44,8 @@
     "name": "resource",
     "doc": {
       "resource_kwargs": {
-        "chunk_shape": [100, 13, 17]
+        "chunk_shape": [100, 13, 17],
+        "frame_per_point": 1
       },
       "root": "{{ root_path }}",
       "resource_path": "/dataset.h5",
@@ -121,12 +122,12 @@
     "name": "event",
     "doc": {
       "uid": "{{ uuid }}-418d3390e5b8/2",
-      "time": 1745500522.79327,
+      "time": 1745500524.79327,
       "data": {
         "det-key2": "det-key2-uid/2"
       },
       "timestamps": {
-        "det-key2": 1745500522.79327
+        "det-key2": 1745500524.79327
       },
       "seq_num": 3,
       "filled": {},
@@ -137,7 +138,7 @@
     "name": "stop",
     "doc": {
       "uid": "{{ uuid }}-fe2748f474de",
-      "time": 1745500525.771699,
+      "time": 1745500526.771699,
       "run_start": "{{ uuid }}-9724b2201fe7",
       "exit_status": "success",
       "reason": "",

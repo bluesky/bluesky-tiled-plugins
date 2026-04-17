@@ -26,3 +26,10 @@ def truncate_json_overflow(data):
             max(data, -1.7976e308), 1.7976e308
         )  # (Approx.) truncate floats to fit in JSON to avoid inf
     return data
+
+
+def list_summands(A: int, b: int, repeat: int = 1) -> tuple[int, ...]:
+    # Generate a list with repeated b summing up to A; append the remainder if necessary
+    # e.g. list_summands(13, 3) = [3, 3, 3, 3, 1]
+    # if `repeat = n`, n > 1, copy and repeat the entire result n times
+    return tuple([b] * (A // b) + ([A % b] if A % b > 0 else [])) * repeat or (0,)

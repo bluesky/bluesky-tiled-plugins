@@ -486,27 +486,49 @@ def test_slice_and_squeeze(client, external_assets_folder, squeeze):
     assert client[uid]["primary"].read() is not None
 
 
-def test_legacy_multiplier_parameter(client, external_assets_folder):
-    tw = TiledWriter(client)
+@pytest.mark.parametrize("multiplier_key", ["multiplier", "frame_per_point"])
+@pytest.mark.parametrize("validate", [True, False])
+def test_legacy_with_multiplier_parameter(
+    client, multiplier_key, validate, external_assets_folder
+):
+    tw = TiledWriter(client, validate=validate)
 
     documents = render_templated_documents(
-        "external_assets_single_key_two_files.json", external_assets_folder
+        "external_assets_legacy.json", external_assets_folder
     )
     for item in documents:
         name, doc = item["name"], item["doc"]
         if name == "start":
             uid = doc["uid"]
 
-        # Modify the documents to add slice and squeeze parameters
+        # Modify the documents to add the multiplier parameter
         if name == "descriptor":
             doc["data_keys"]["det-key2"]["shape"] = [13, 17]
         elif name in {"resource", "stream_resource"}:
-            doc["parameters"]["multiplier"] = 1
+            doc["resource_kwargs"].pop("frame_per_point", None)  # Remove if exists
+            doc["resource_kwargs"][multiplier_key] = 1
 
-        tw(name, doc)
+        # Check that the warning is issued when data changes during the validation
+        if name == "stop" and validate:
+            with pytest.warns(UserWarning):
+                tw(name, doc)
+        else:
+            tw(name, doc)
 
     # Try reading the imported data
     assert client[uid]["primary"].read() is not None
+
+    # Check the metadata and structure of the array
+    arr = client[uid]["primary/det-key2"]
+    assert arr.metadata["frame_per_point"] == 1  # always called "frame_per_point"
+    if validate:
+        assert arr.shape == (3, 1, 13, 17)
+        assert arr.chunks == ((3,), (1,), (13,), (17,))
+        assert arr.data_sources()[0].properties["chunks"] == [[3], [13], [17]]
+    else:
+        assert arr.shape == (3, 13, 17)
+        assert arr.chunks == ((3,), (13,), (17,))
+        assert not arr.data_sources()[0].properties
 
 
 def test_streams_with_no_events(client, external_assets_folder):
