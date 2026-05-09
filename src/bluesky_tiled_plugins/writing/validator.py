@@ -49,6 +49,7 @@ def validate(
     try_reading=True,
     raise_on_error=False,
     ignore_errors=None,
+    write_notes=True,
 ):
     """Validate the given BlueskyRun client for completeness and data integrity.
 
@@ -70,6 +71,9 @@ def validate(
         List of error messages to ignore during validation. If any errors whose
         message matches one of the patterns in this list are encountered, they will
         be logged, but the validation of the remaining data keys will continue.
+    write_notes : bool, optional
+        Whether to write validation notes to the root client's metadata.
+        Default is True.
 
     Returns
     -------
@@ -138,7 +142,7 @@ def validate(
     # Update the root metadata with validation notes
     for msg in notes:
         logger.warning(msg)
-    if notes:
+    if notes and write_notes:
         existing_notes = root_client.metadata.get("notes", [])
         root_client.update_metadata(
             {"notes": existing_notes + notes}, drop_revision=True

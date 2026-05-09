@@ -8,6 +8,7 @@ from datetime import datetime
 
 from tiled.client.container import Container
 from tiled.client.utils import handle_error, retry_context
+from tiled.utils import safe_json_dump
 
 from ._common import IPYTHON_METHODS
 from .bluesky_event_stream import BlueskyEventStreamV2SQL
@@ -22,6 +23,7 @@ from .document import (
     StreamDatum,
     StreamResource,
 )
+from ..writing.validator import validate, ValidationException
 
 _document_types = {
     "start": Start,
@@ -444,3 +446,90 @@ class BlueskyRunV3(_BlueskyRunSQL):
     @property
     def v3(self):
         return self
+
+    def validate(self, fix_errors=True, try_reading=True, raise_on_error=False, ignore_errors=None, write_notes=True):
+        """Validate for for completeness and data integrity.
+
+        Parameters
+        ----------
+
+        root_client : tiled.client.run.RunClient
+            The Run client to validate.
+        fix_errors : bool, optional
+            Whether to attempt to fix structural errors found during validation.
+            Default is True.
+        try_reading : bool, optional
+            Whether to attempt reading the data for external data keys.
+            Default is True.
+        raise_on_error : bool, optional
+            Whether to raise an exception on the first validation error encountered.
+            Default is False.
+        ignore_errors : list of str, optional
+            List of error messages to ignore during validation. If any errors whose
+            message matches one of the patterns in this list are encountered, they will
+            be logged, but the validation of the remaining data keys will continue.
+        write_notes : bool, optional
+            Whether to write validation notes to the root client's metadata.
+            Default is True.
+
+        Returns
+        -------
+        bool
+            True if the data structure is valid and reading succeeded, False otherwise.
+        """
+
+        is_valid = False
+
+        for attempt in retry_context():
+            with attempt:
+                response = self.context.http_client.post(
+                    self.uri.replace("/api/v1/metadata/", "/custom/validate/", 1),
+                    params={"fix": fix_errors, "read": try_reading},
+                    content=safe_json_dump({"ignore_errors": ignore_errors}),
+                )
+
+        try:
+            content = handle_error(response).json()
+            is_valid, notes = content.get("valid"), content.get("notes", [])
+
+            if is_valid:
+                for note in notes:
+                    warnings.warn(note, stacklevel=2)
+
+                if notes and write_notes:
+                    existing_notes = self.metadata.get("notes", [])
+                    self.update_metadata(
+                        {"notes": existing_notes + notes}, drop_revision=True
+                    )
+            elif raise_on_error:
+                msg = "Remote validation failed: " + "; ".join(notes)
+                raise ValidationException(msg, self.item["id"])
+
+        except httpx.HTTPStatusError as e:
+            # Backcompatibility: if the server does not support validation endpoint,
+            # it will return 404 Not Found error; in this case, attempt to validate
+            # the data structure locally by the client itself (requires multiple
+            # round-trips to the server, but better than nothing).
+
+            if response.status_code == httpx.codes.NOT_FOUND:
+                warnings.warn(
+                    "Tiled server does not support remote validation. "
+                    "Attempting to validate the data structure by the client.",
+                    stacklevel=2,
+                )
+                return validate(
+                    self,
+                    fix_errors=fix_errors,
+                    try_reading=try_reading,
+                    raise_on_error=raise_on_error,
+                    ignore_errors=ignore_errors,
+                    write_notes=write_notes,
+                )
+            elif raise_on_error:
+                msg = (
+                    "Remote validation request failed with status code "
+                    f"{response.status_code}: {response.text}"
+                )
+                raise ValidationException(msg, self.item["id"]) from e
+
+        return is_valid
