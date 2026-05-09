@@ -855,7 +855,9 @@ class _RunWriter(DocumentRouter):
             for attempt in retry_context():
                 with attempt:
                     response = self.root_node.context.http_client.post(
-                        self.root_node.uri.replace("/api/v1/metadata/", "/custom/validate/", 1),
+                        self.root_node.uri.replace(
+                            "/api/v1/metadata/", "/custom/validate/", 1
+                        ),
                         params={"fix": True},
                         content=safe_json_dump({"ignore_errors": self.ignore_errors}),
                     )

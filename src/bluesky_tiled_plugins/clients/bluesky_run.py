@@ -1,5 +1,6 @@
 import copy
 import functools
+import httpx
 import io
 import json
 import keyword
@@ -447,7 +448,14 @@ class BlueskyRunV3(_BlueskyRunSQL):
     def v3(self):
         return self
 
-    def validate(self, fix_errors=True, try_reading=True, raise_on_error=False, ignore_errors=None, write_notes=True):
+    def validate(
+        self,
+        fix_errors=True,
+        try_reading=True,
+        raise_on_error=False,
+        ignore_errors=None,
+        write_notes=True,
+    ):
         """Validate for for completeness and data integrity.
 
         Parameters
