@@ -460,9 +460,6 @@ class BlueskyRunV3(_BlueskyRunSQL):
 
         Parameters
         ----------
-
-        root_client : tiled.client.run.RunClient
-            The Run client to validate.
         fix_errors : bool, optional
             Whether to attempt to fix structural errors found during validation.
             Default is True.
