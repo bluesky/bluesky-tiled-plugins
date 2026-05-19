@@ -10,6 +10,7 @@ from datetime import datetime
 from tiled.client.container import Container
 from tiled.client.utils import handle_error, retry_context
 from tiled.utils import safe_json_dump
+from tiled.type_aliases import JSON_ITEM
 
 from ._common import IPYTHON_METHODS
 from .bluesky_event_stream import BlueskyEventStreamV2SQL
@@ -53,14 +54,14 @@ class BlueskyRun(Container):
         return _cls(context, item=item, structure_clients=structure_clients, **kwargs)
 
     @staticmethod
-    def _is_sql(item):
+    def _is_sql(item) -> bool:
         for spec in item["attributes"]["specs"]:
             if spec["name"] == "BlueskyRun":
                 if spec["version"].startswith("3."):
                     return True
                 return False
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         metadata = self.metadata
         datetime_ = datetime.fromtimestamp(metadata["start"]["time"])
         return (
@@ -73,7 +74,7 @@ class BlueskyRun(Container):
         )
 
     @property
-    def start(self):
+    def start(self) -> dict[str, JSON_ITEM]:
         """
         The Run Start document. A convenience alias:
 
@@ -83,7 +84,7 @@ class BlueskyRun(Container):
         return self.metadata["start"]
 
     @property
-    def stop(self):
+    def stop(self) -> dict[str, JSON_ITEM]:
         """
         The Run Stop document. A convenience alias:
 
@@ -93,7 +94,7 @@ class BlueskyRun(Container):
         return self.metadata["stop"]
 
     @functools.cached_property
-    def descriptors(self):
+    def descriptors(self) -> list[dict[str, JSON_ITEM]]:
         return [doc for name, doc in self.documents() if name == "descriptor"]
 
     def __getattr__(self, key):
@@ -120,7 +121,7 @@ class BlueskyRun(Container):
         ]
         return super().__dir__() + tab_completable_entries
 
-    def describe(self):
+    def describe(self) -> dict[str, dict[str, JSON_ITEM]]:
         "For back-compat with intake-based BlueskyRun"
         warnings.warn(
             "This will be removed. Use .metadata directly instead of describe()['metadata'].",
@@ -145,7 +146,7 @@ class BlueskyRun(Container):
         )
 
     @property
-    def base(self):
+    def base(self) -> Container:
         "Return the base Container client instead of a BlueskyRun client"
         return Container(
             self.context,
@@ -187,11 +188,11 @@ class BlueskyRunV2(BlueskyRun):
         return header
 
     @property
-    def v2(self):
+    def v2(self) -> "BlueskyRunV2":
         return self
 
     @property
-    def v3(self):
+    def v3(self) -> "BlueskyRunV3":
         if not self._is_sql(self.item):
             raise NotImplementedError(
                 "v3 is not available for MongoDB-based BlueskyRun"
@@ -366,6 +367,11 @@ class _BlueskyRunSQL(BlueskyRun):
         yield from self._stream_names
 
     def documents(self, fill=False):
+        if fill:
+            raise NotImplementedError(
+                "documents(fill=True) is not supported for SQL-based BlueskyRun clients"
+            )
+
         with io.BytesIO() as buffer:
             self.export(buffer, format="application/json-seq")
             buffer.seek(0)
@@ -437,7 +443,7 @@ class BlueskyRunV3(_BlueskyRunSQL):
         return self.v2.v1
 
     @property
-    def v2(self):
+    def v2(self) -> BlueskyRunV2:
         structure_clients = copy.copy(self.structure_clients)
         structure_clients.set("BlueskyRun", lambda: BlueskyRunV2)
         return BlueskyRunV2(
@@ -445,7 +451,7 @@ class BlueskyRunV3(_BlueskyRunSQL):
         )
 
     @property
-    def v3(self):
+    def v3(self) -> "BlueskyRunV3":
         return self
 
     def validate(
