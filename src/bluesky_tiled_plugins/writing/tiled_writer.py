@@ -398,13 +398,13 @@ class RunNormalizer(DocumentRouter):
         return sres_doc, sdat_doc
 
     def start(self, doc: RunStart):
-        doc = copy.copy(doc)
+        doc = copy.deepcopy(doc)
         if patch := self.patches.get("start"):
             doc = patch(doc)
         self.emit(DocumentNames.start, doc)
 
     def stop(self, doc: RunStop):
-        doc = copy.copy(doc)
+        doc = copy.deepcopy(doc)
         if patch := self.patches.get("stop"):
             doc = patch(doc)
 
@@ -559,7 +559,7 @@ class RunNormalizer(DocumentRouter):
                 self._ext_ref_cache.append(missing)
 
     def resource(self, doc: Resource):
-        doc = copy.copy(doc)
+        doc = copy.deepcopy(doc)
         if patch := self.patches.get("resource"):
             doc = patch(doc)
 
@@ -571,7 +571,7 @@ class RunNormalizer(DocumentRouter):
         self._sres_cache[doc["uid"]] = self._convert_resource_to_stream_resource(doc)
 
     def stream_resource(self, doc: StreamResource):
-        doc = copy.copy(doc)
+        doc = copy.deepcopy(doc)
         if patch := self.patches.get("stream_resource"):
             doc = patch(doc)
 
@@ -580,13 +580,13 @@ class RunNormalizer(DocumentRouter):
         self.emit(DocumentNames.stream_resource, doc)
 
     def stream_datum(self, doc: StreamDatum):
-        doc = copy.copy(doc)
+        doc = copy.deepcopy(doc)
         if patch := self.patches.get("stream_datum"):
             doc = patch(doc)
         self.emit(DocumentNames.stream_datum, doc)
 
     def datum(self, doc: Datum):
-        doc = copy.copy(doc)
+        doc = copy.deepcopy(doc)
         # Mark the Datum document with the spec of the corresponding Resource, if known
         if spec := self._specs_by_resource_uid.get(doc["resource"]):
             doc["datum_kwargs"] = doc.get("datum_kwargs", {}) | {"_resource_spec": spec}
@@ -1100,7 +1100,7 @@ class TiledWriter:
         validate: bool = False,
         ignore_errors: Optional[list[str]] = None,
     ):
-        """Callback for write metadata and data from Bluesky documents into Tiled.
+        """Callback for writing metadata and data from Bluesky documents into Tiled.
 
         This callback relies on the `RunRouter` to route documents from one or more runs into
         independent instances of the `_RunWriter` callback. The `RunRouter` is responsible for
@@ -1140,7 +1140,7 @@ class TiledWriter:
             to Tiled immediately after they are received.
         validate : bool
             If True, validate all data sources before writing to Tiled. This requires the access to the
-            files on the client.
+            files on the client or remote validation endpoint to be enabled on the server.
         """
 
         self.client = client.include_data_sources()
