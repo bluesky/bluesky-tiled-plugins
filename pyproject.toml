@@ -38,7 +38,7 @@ dependencies = [
   "event-model",
   "mongoquery",
   "pytz",
-  "tiled[client] >=0.2.0",
+  "tiled[client] >=0.2.9",
   "tzlocal",
 ]
 
@@ -63,7 +63,7 @@ test = [
   "pytest >=6",
   "pytest-cov >=3",
   "tifffile",
-  "tiled[server] >=0.2.0",
+  "tiled[server] >=0.2.9",
 ]
 dev = [
   { include-group = "test" },
