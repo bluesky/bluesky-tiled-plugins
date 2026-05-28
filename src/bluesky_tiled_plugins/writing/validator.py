@@ -282,6 +282,52 @@ def validate_data_source(
     true_shape = orig_shape = true_structure.shape
     true_chunks = orig_chunks = true_structure.chunks
 
+    # Check if this might be StructDtype -- this would affect the shape validation
+    if structure.data_type != true_data_type:
+        if not fix_errors:
+            raise StructureValidationException(
+                f"Data type mismatch: {structure.data_type} != {true_data_type}"
+            )
+
+        elif isinstance(structure.data_type, StructDtype):
+            npdt_s = structure.data_type.to_numpy_dtype()
+            npdt_t = true_data_type.to_numpy_dtype()
+            if isinstance(true_data_type, StructDtype):
+                # Both are structural dtypes: use names from structure, dtypes from file
+                if len(npdt_s.names) != len(npdt_t.names):
+                    raise StructureValidationException(
+                        f"Number of fields mismatch in structured dtype: {len(npdt_s.names)} != {len(npdt_t.names)}"  # noqa
+                    )
+                fields = [
+                    (n, f[0]) for n, f in zip(npdt_s.names, npdt_t.fields.values())
+                ]
+
+            elif isinstance(true_data_type, BuiltinDtype):
+                # All columns appear to be of the same dtype, but expected structured
+                if len(npdt_s.names) != true_shape[-1]:
+                    raise StructureValidationException(
+                        f"Number of fields mismatch in structured dtype: {len(npdt_s.names)} != {true_shape[-1]}"  # noqa
+                    )
+                true_shape, true_chunks = (
+                    (*true_shape[:-1], 1),
+                    (*true_chunks[:-1], (1,)),
+                )
+                fields = [(n, npdt_t) for n in npdt_s.names]
+
+            true_data_type = StructDtype.from_numpy_dtype(numpy.dtype(fields))
+
+        elif isinstance(true_data_type, StructDtype):
+            # Expected a simple builtin dtype, but the file was parsed as structured;
+            # try to cast as BuiltinDtype if possible (common dtype that matches all fields)
+            npdt_t = true_data_type.to_numpy_dtype()
+            common_dtype = numpy.result_type(*[f[0] for f in npdt_t.fields.values()])
+            true_data_type = BuiltinDtype.from_numpy_dtype(common_dtype)
+
+        # Both structure and file have simple built-in dtypes: just use the file dtype
+        msg = f"Fixed dtype mismatch: {structure.data_type.to_numpy_dtype()} -> {true_data_type.to_numpy_dtype()}"  # noqa
+        structure.data_type = true_data_type
+        notes.append(msg)
+
     # If this resource has the `frame_per_point`/`multiplier` parameter, the true shape of
     # the data is expected to be (num_events, multiplier, *rest) and needs to be adjusted,
     # but only if the original shape in the file is divisible by the multiplier.
@@ -316,47 +362,6 @@ def validate_data_source(
         _chunk_shape = tuple(c[0] for c in structure.chunks)
         msg = f"Fixed chunk shape mismatch: {_chunk_shape} -> {_true_chunk_shape}"
         structure.chunks = true_chunks
-        notes.append(msg)
-
-    if structure.data_type != true_data_type:
-        if not fix_errors:
-            raise StructureValidationException(
-                f"Data type mismatch: {structure.data_type} != {true_data_type}"
-            )
-
-        elif isinstance(structure.data_type, StructDtype):
-            npdt_s = structure.data_type.to_numpy_dtype()
-            npdt_t = true_data_type.to_numpy_dtype()
-            if isinstance(true_data_type, StructDtype):
-                # Both are structural dtypes: use names from structure, dtypes from file
-                if len(npdt_s.names) != len(npdt_t.names):
-                    raise StructureValidationException(
-                        f"Number of fields mismatch in structured dtype: {len(npdt_s.names)} != {len(npdt_t.names)}"  # noqa
-                    )
-                fields = [
-                    (n, f[0]) for n, f in zip(npdt_s.names, npdt_t.fields.values())
-                ]
-
-            elif isinstance(true_data_type, BuiltinDtype):
-                # All columns appear to be of the same dtype, but expected structured
-                if len(npdt_s.names) != structure.shape[-1]:
-                    raise StructureValidationException(
-                        f"Number of fields mismatch in structured dtype: {len(npdt_s.names)} != {structure.shape[-1]}"  # noqa
-                    )
-                fields = [(n, npdt_t) for n in npdt_s.names]
-
-            true_data_type = StructDtype.from_numpy_dtype(numpy.dtype(fields))
-
-        elif isinstance(true_data_type, StructDtype):
-            # Expected a simple builtin dtype, but the file was parsed as structured;
-            # try to cast as BuiltinDtype if possible (common dtype that matches all fields)
-            npdt_t = true_data_type.to_numpy_dtype()
-            common_dtype = numpy.result_type(*[f[0] for f in npdt_t.fields.values()])
-            true_data_type = BuiltinDtype.from_numpy_dtype(common_dtype)
-
-        # Both structure and file have simple built-in dtypes: just use the file dtype
-        msg = f"Fixed dtype mismatch: {structure.data_type.to_numpy_dtype()} -> {true_data_type.to_numpy_dtype()}"  # noqa
-        structure.data_type = true_data_type
         notes.append(msg)
 
     if structure.dims and (len(structure.dims) != len(true_shape)):
