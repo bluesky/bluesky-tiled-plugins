@@ -308,10 +308,8 @@ def validate_data_source(
                     raise StructureValidationException(
                         f"Number of fields mismatch in structured dtype: {len(npdt_s.names)} != {true_shape[-1]}"  # noqa
                     )
-                true_shape, true_chunks = (
-                    (*true_shape[:-1], 1),
-                    (*true_chunks[:-1], (1,)),
-                )
+                true_shape = (*true_shape[:-1], 1)
+                true_chunks = (*true_chunks[:-1], (1,))
                 fields = [(n, npdt_t) for n in npdt_s.names]
 
             true_data_type = StructDtype.from_numpy_dtype(numpy.dtype(fields))
