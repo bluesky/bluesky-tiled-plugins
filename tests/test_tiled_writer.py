@@ -321,6 +321,9 @@ def collect_plan(*objs, name="primary"):
     "fname", ["internal_events", "external_assets", "external_assets_legacy"]
 )
 @pytest.mark.parametrize("batch_size", [0, 1, 1000, None])
+@pytest.mark.filterwarnings(
+    "ignore:Failed to convert ragged array to numpy:UserWarning:"
+)
 def test_with_correct_sample_runs(client, batch_size, external_assets_folder, fname):
     if batch_size is None:
         tw = TiledWriter(client)
