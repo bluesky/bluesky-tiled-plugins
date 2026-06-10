@@ -47,7 +47,7 @@ from packaging.version import Version
 
 from ..utils import truncate_json_overflow
 from ._dispatcher import Dispatcher
-from ._json_writer import JSONLinesWriter
+from ._json_writer import JSONLinesWriter, JSONDictWriter
 from .validator import ValidationException
 from .consolidators import (
     ConsolidatorBase,
@@ -56,6 +56,7 @@ from .consolidators import (
     StructureFamily,
     consolidator_factory,
 )
+from ..clients.catalog_of_bluesky_runs import CatalogOfBlueskyRuns
 
 # Aggregate the Event table rows and StreamDatums in batches before writing to Tiled
 BATCH_SIZE = 10000
@@ -159,12 +160,16 @@ ExternalEventDataReference = namedtuple(
 
 
 class _ConditionalBackup:
-    """Callback that tries to call the primary callback and, if it fails, flushes the buffer to backup callbacks.
+    """Callback to save Bluesky data if the primary callback fails.
 
-    Once an error has been encountererd in the primary callback, all subsequent documents would be sent to the
-    backup callbacks as well.
+    Callback that tries to call the primary callback and,
+    if it fails, flushes the buffer to backup callbacks.
 
-    This callback is intended to be used with a `RunRouter` and process documents from a single Bluesky run.
+    Once an error has been encountererd in the primary callback,
+    all subsequent documents would be sent to the backup callbacks as well.
+
+    This callback is intended to be used with a `RunRouter` and process
+    documents from a single Bluesky run.
     """
 
     def __init__(
@@ -212,8 +217,9 @@ class RunNormalizer(DocumentRouter):
     ):
         """Callback for updating Bluesky documents to their latest schema.
 
-        This callback can be used to subscribe additional consumers that require the updated documents.
-        Returns a shallow copy of the document to avoid modifying the original one.
+        This callback can be used to subscribe additional consumers that require
+        the updated documents. Returns a shallow copy of the document to avoid modifying
+        the original one.
 
         Parameters
         ----------
@@ -223,8 +229,8 @@ class RunNormalizer(DocumentRouter):
             The keys are document names (e.g., "start", "stop", "descriptor", etc.), and the values
             are functions that take a document as input and return a modified document.
         spec_to_mimetype : dict[str, str], optional
-            A dictionary mapping spec names to MIME types. This is used to convert `Resource` documents
-            to the latest `StreamResource` schema.
+            A dictionary mapping spec names to MIME types. This is used to convert `Resource`
+            documents to the latest `StreamResource` schema.
             The supplied dictionary updates the default `MIMETYPE_LOOKUP` dictionary.
         """
 
@@ -663,16 +669,14 @@ class _RunWriter(DocumentRouter):
         self._stream_resource_cache: dict[str, StreamResource] = {}
         self._consolidators: dict[str, ConsolidatorBase] = {}
         self._internal_data_cache: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        self._external_data_cache: dict[
-            str, StreamDatum
-        ] = {}  # sres_uid : (concatenated) StreamDatum
-        self._int_array_keys: dict[str, set[str]] = defaultdict(
-            set
-        )  # data_keys with array data by desc_name
+        # sres_uid : (concatenated) StreamDatum
+        self._external_data_cache: dict[str, StreamDatum] = {}
+        # data_keys corresponding to internal dxata written as arrays, by desc_name
+        self._int_array_keys: dict[str, set[str]] = defaultdict(set)
+        # data_keys with array data of inconsistent length, by desc_name
+        self._int_ragged_array_keys: dict[str, set[str]] = defaultdict(set)
         self._batch_size: int = batch_size
-        self._max_array_size: int = (
-            max_array_size  # Max size of arrays to write to tabular storage
-        )
+        self._max_array_size: int = max_array_size  # Max array size in SQL
         self._validate: bool = validate
         self.ignore_errors = ignore_errors or []
         self.data_keys: dict[str, DataKey] = {}
@@ -724,7 +728,32 @@ class _RunWriter(DocumentRouter):
                     extend=True,
                 )
 
-        # 2. Write internal tabular data; all data_keys for arrays have been removed from data_cache on step 1
+        # 2. Write internal ragged array data, if any; remove it from the tabular data
+        for key in self._int_ragged_array_keys[desc_name]:
+            from tiled.structures.ragged import make_ragged_array
+
+            arr_lst = [row.pop(key) for row in data_cache if key in row]
+            shape = (len(arr_lst), *self.data_keys[key].get("shape", ()))
+            array = make_ragged_array(arr_lst, shape=shape)
+
+            # Create a new ragged array data node or update the existing one
+            if not (arr_client := self._internal_arrays.get(f"{desc_name}/{key}")):
+                metadata = truncate_json_overflow(self.data_keys.get(key, {}))
+                arr_client = desc_node.write_ragged(
+                    array,
+                    key=key,
+                    metadata=metadata,
+                    dims=("time", *[f"dim_{i}" for i in range(1, len(shape))]),
+                    access_tags=self.access_tags,
+                )
+                self._internal_arrays[f"{desc_name}/{key}"] = arr_client
+                self.notes.append(
+                    f"Internal data for '{key}' in stream '{desc_name}' written as ragged array."
+                )
+            else:
+                arr_client.patch(array, offset=arr_client.shape[0], extend=True)
+
+        # 3. Write internal tabular data; all data_keys for arrays have been removed from data_cache on step 1
         if not (table := pyarrow.Table.from_pylist(data_cache)):
             return  # Nothing to write
 
@@ -953,14 +982,13 @@ class _RunWriter(DocumentRouter):
                 access_tags=self.access_tags,
             ).base
 
-            # Keep track of data_keys for internal array data to be written as zarr, if any
+            # Keep track of data_keys for internal array data to be written as zarr or ragged, if any
             for key, val in doc.get("data_keys", {}).items():
-                if (
-                    ("external" not in val.keys())
-                    and (val.get("dtype") == "array")
-                    and (0 <= self._max_array_size < sum(val.get("shape", [])))
-                ):
-                    self._int_array_keys[desc_name].add(key)
+                if ("external" not in val.keys()) and (val.get("dtype") == "array"):
+                    if None in val.get("shape", ()):
+                        self._int_ragged_array_keys[desc_name].add(key)
+                    elif 0 <= self._max_array_size < sum(val.get("shape", ())):
+                        self._int_array_keys[desc_name].add(key)
         else:
             # Rare Case: This new descriptor likely updates stream configs mid-experiment
             # We assume tha the full descriptor has been already received, so we don't need to store everything
@@ -1155,7 +1183,14 @@ class TiledWriter:
         self.ignore_errors = ignore_errors or []
 
     def _factory(self, name, doc):
-        """Factory method to create a callback for writing a single run into Tiled."""
+        """Factory method to create a callback for writing a single run into Tiled.
+
+        If `normalizer` is specified, create a RunNormalizer callback to update documents
+        to the latest schema before writing them to Tiled.
+
+        If `backup_directory` or `backup_dictionary` is specified, create a JSONLinesWriter
+        or JSONDictWriter callbacks to back up the documents.
+        """
         cb = run_writer = _RunWriter(
             self.client,
             batch_size=self._batch_size,
@@ -1171,9 +1206,13 @@ class TiledWriter:
             )
             cb.subscribe(run_writer)
 
+        backup_callbacks = []
         if self.backup_directory:
-            # If backup_directory is specified, create a conditional backup callback writing documents to JSONLines
-            cb = _ConditionalBackup(cb, [JSONLinesWriter(self.backup_directory)])
+            backup_callbacks.append(JSONLinesWriter(self.backup_directory))
+        if self.backup_dictionary is not None:
+            backup_callbacks.append(JSONDictWriter(self.backup_dictionary))
+        if backup_callbacks:
+            cb = _ConditionalBackup(cb, backup_callbacks)
 
         return [cb], []
 
@@ -1220,6 +1259,60 @@ class TiledWriter:
             backup_directory=backup_directory,
             batch_size=batch_size,
         )
+
+    def __call__(self, name, doc):
+        self._run_router(name, doc)
+
+
+class _RunInserter:
+    def __init__(self, client: CatalogOfBlueskyRuns):
+        self._client = client
+
+    def __call__(self, name, doc):
+        self._client.post_document(name, doc)
+
+
+class TiledInserter:
+    """Callback for _inserting_ plain documents into Tiled
+
+    This mimics the behavior of Databroker's `insert` method, which allows to insert
+    documents into MongoDB collections without normalization or validation.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        client: CatalogOfBlueskyRuns,
+        *,
+        backup_directory: str | None = None,
+        backup_dictionary: dict | None = None,
+    ):
+        self.name = name
+        self.client = client
+        self.backup_directory = backup_directory
+        self.backup_dictionary = backup_dictionary
+        self._run_router = RunRouter([self._factory])
+
+    def _factory(self, name, doc):
+        """Factory method to create a callback for processing a single Bluesky run
+
+        If backup_directory or backup_dictionary are specified, create conditional
+        backup callback(s) for saving documents as JSON.
+        """
+        cb = _RunInserter(self.client)
+
+        backup_callbacks = []
+        if self.backup_directory:
+            backup_callbacks.append(JSONLinesWriter(self.backup_directory))
+        if self.backup_dictionary is not None:
+            backup_callbacks.append(JSONDictWriter(self.backup_dictionary))
+        if backup_callbacks:
+            cb = _ConditionalBackup(cb, backup_callbacks)
+
+        return [cb], []
+
+    def insert(self, name, doc):
+        self(name, doc)
 
     def __call__(self, name, doc):
         self._run_router(name, doc)
