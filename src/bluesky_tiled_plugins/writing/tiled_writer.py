@@ -669,16 +669,14 @@ class _RunWriter(DocumentRouter):
         self._stream_resource_cache: dict[str, StreamResource] = {}
         self._consolidators: dict[str, ConsolidatorBase] = {}
         self._internal_data_cache: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        self._external_data_cache: dict[
-            str, StreamDatum
-        ] = {}  # sres_uid : (concatenated) StreamDatum
-        self._int_array_keys: dict[str, set[str]] = defaultdict(
-            set
-        )  # data_keys with array data by desc_name
+        # sres_uid : (concatenated) StreamDatum
+        self._external_data_cache: dict[str, StreamDatum] = {}
+        # data_keys corresponding to internal dxata written as arrays, by desc_name
+        self._int_array_keys: dict[str, set[str]] = defaultdict(set)
+        # data_keys with array data of inconsistent length, by desc_name
+        self._int_ragged_array_keys: dict[str, set[str]] = defaultdict(set)
         self._batch_size: int = batch_size
-        self._max_array_size: int = (
-            max_array_size  # Max size of arrays to write to tabular storage
-        )
+        self._max_array_size: int = max_array_size  # Max array size in SQL
         self._validate: bool = validate
         self.ignore_errors = ignore_errors or []
         self.data_keys: dict[str, DataKey] = {}
@@ -730,7 +728,32 @@ class _RunWriter(DocumentRouter):
                     extend=True,
                 )
 
-        # 2. Write internal tabular data; all data_keys for arrays have been removed from data_cache on step 1
+        # 2. Write internal ragged array data, if any; remove it from the tabular data
+        for key in self._int_ragged_array_keys[desc_name]:
+            from tiled.structures.ragged import make_ragged_array
+
+            arr_lst = [row.pop(key) for row in data_cache if key in row]
+            shape = (len(arr_lst), *self.data_keys[key].get("shape", ()))
+            array = make_ragged_array(arr_lst, shape=shape)
+
+            # Create a new ragged array data node or update the existing one
+            if not (arr_client := self._internal_arrays.get(f"{desc_name}/{key}")):
+                metadata = truncate_json_overflow(self.data_keys.get(key, {}))
+                arr_client = desc_node.write_ragged(
+                    array,
+                    key=key,
+                    metadata=metadata,
+                    dims=("time", *[f"dim_{i}" for i in range(1, len(shape))]),
+                    access_tags=self.access_tags,
+                )
+                self._internal_arrays[f"{desc_name}/{key}"] = arr_client
+                self.notes.append(
+                    f"Internal data for '{key}' in stream '{desc_name}' written as ragged array."
+                )
+            else:
+                arr_client.patch(array, offset=arr_client.shape[0], extend=True)
+
+        # 3. Write internal tabular data; all data_keys for arrays have been removed from data_cache on step 1
         if not (table := pyarrow.Table.from_pylist(data_cache)):
             return  # Nothing to write
 
@@ -959,14 +982,13 @@ class _RunWriter(DocumentRouter):
                 access_tags=self.access_tags,
             ).base
 
-            # Keep track of data_keys for internal array data to be written as zarr, if any
+            # Keep track of data_keys for internal array data to be written as zarr or ragged, if any
             for key, val in doc.get("data_keys", {}).items():
-                if (
-                    ("external" not in val.keys())
-                    and (val.get("dtype") == "array")
-                    and (0 <= self._max_array_size < sum(val.get("shape", [])))
-                ):
-                    self._int_array_keys[desc_name].add(key)
+                if ("external" not in val.keys()) and (val.get("dtype") == "array"):
+                    if None in val.get("shape", ()):
+                        self._int_ragged_array_keys[desc_name].add(key)
+                    elif 0 <= self._max_array_size < sum(val.get("shape", ())):
+                        self._int_array_keys[desc_name].add(key)
         else:
             # Rare Case: This new descriptor likely updates stream configs mid-experiment
             # We assume tha the full descriptor has been already received, so we don't need to store everything
