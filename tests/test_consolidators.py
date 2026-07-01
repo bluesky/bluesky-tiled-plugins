@@ -472,17 +472,6 @@ chunk_tiff_testdata = [
     ("test_6_imgs", "concat", True, 6, 2, (2,), ((2,) * 15, (10,), (15,))),
     ("test_6_imgs", "stack", True, 6, 4, (3,), ((3, 2), (6,), (10,), (15,))),
     ("test_6_imgs", "concat", True, 6, 4, (3,), ((3,) * 10, (10,), (15,))),
-    (
-        "test_6_imgs",
-        "stack",
-        True,
-        6,
-        1,
-        (5,),
-        None,
-    ),  # chunk_shape[0] must devide the number of frames
-    ("test_6_imgs", "concat", True, 6, 1, (5,), None),
-    ("test_6_imgs", "concat", True, 6, 10, (10,), None),
 ]
 
 
@@ -509,11 +498,6 @@ def test_tiff_and_jpeg_chunks(
     stream_resource = image_seq_stream_resource_factory(
         image_format=image_format, data_key=data_key, chunk_shape=chunk_shape
     )
-    if expected_chunks is None:
-        with pytest.raises(AssertionError):
-            cons = consolidator_factory(stream_resource, descriptor)
-        return
-
     cons = consolidator_factory(stream_resource, descriptor)
     cons.join_method = join_method
     cons.join_chunks = join_chunks
@@ -534,6 +518,54 @@ def test_tiff_and_jpeg_chunks(
         if join_method == "concat"
         else 5
     )
+
+
+@pytest.mark.parametrize("chunk_shape", [(5,), (10,)])
+def test_multipart_related_coerces_non_divisor_chunk_shape(
+    descriptor, image_seq_stream_resource_factory, chunk_shape
+):
+    """When frames-per-file does not divide frames-per-datum under `concat`,
+    `MultipartRelatedConsolidator` warns and coerces chunk_shape to one file per datum."""
+    sres = image_seq_stream_resource_factory(
+        image_format="tiff", data_key="test_6_imgs", chunk_shape=chunk_shape
+    )
+    with pytest.warns(UserWarning, match="does not divide"):
+        cons = consolidator_factory(sres, descriptor)
+    assert cons.chunk_shape == (6,)
+    assert cons.files_per_datum == 1
+
+
+def test_multipart_related_files_per_datum_override(
+    descriptor, image_seq_stream_resource_factory, stream_datum_factory
+):
+    """The `files_per_datum` StreamResource parameter overrides the inferred value,
+    both at construction time and after `update_from_stream_resource`."""
+    sres = image_seq_stream_resource_factory(
+        image_format="tiff", data_key="test_6_imgs", chunk_shape=(1,)
+    )
+    sres["parameters"]["files_per_datum"] = 3
+    cons = consolidator_factory(sres, descriptor)
+    assert cons.files_per_datum == 3
+
+    # Two datums (indices 0..1) with files_per_datum=3 -> 6 files registered.
+    cons.consume_stream_datum(stream_datum_factory("test_6_imgs", 0, 0, 2))
+    assert len(cons.assets) == 6
+
+    # A subsequent StreamResource without files_per_datum falls back to the
+    # inferred value (6 frames / chunk_shape[0]=1 => 6).
+    sres2 = image_seq_stream_resource_factory(
+        image_format="tiff", data_key="test_6_imgs", chunk_shape=(1,)
+    )
+    cons.update_from_stream_resource(sres2)
+    assert cons.files_per_datum == 6
+
+    # And overriding again on the next update is honored.
+    sres3 = image_seq_stream_resource_factory(
+        image_format="tiff", data_key="test_6_imgs", chunk_shape=(1,)
+    )
+    sres3["parameters"]["files_per_datum"] = 2
+    cons.update_from_stream_resource(sres3)
+    assert cons.files_per_datum == 2
 
 
 # Tuples of (filename, original_template, expected_template, formatted)

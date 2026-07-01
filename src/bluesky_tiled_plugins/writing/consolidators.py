@@ -664,19 +664,39 @@ class MultipartRelatedConsolidator(ConsolidatorBase):
     ):
         super().__init__(stream_resource, descriptor)
         self.assets.clear()  # Assets will be populated based on datum indices
-        self.data_uris: list[str] = []
-        self.chunk_shape = self.chunk_shape or (
-            1,
-        )  # I.e. number of frames per file (tiff, jpeg, etc.)
-        if self.join_method == "concat":
-            assert self.datum_shape[0] % self.chunk_shape[0] == 0, (
-                f"Number of frames per file ({self.chunk_shape[0]}) must divide the total number of frames per "
-                f"datum ({self.datum_shape[0]}): variable-sized files are not allowed."
+        self.chunk_shape = self.chunk_shape or (1,)  # num frames per file
+
+        # Ensure that the number of frames per file divides the number of frames per datum;
+        # if not, silently coerce to a single file per datum but warn.
+        if (self.join_method == "concat") and (
+            self.datum_shape[0] % self.chunk_shape[0] != 0
+        ):
+            warnings.warn(
+                f"Number of frames per file ({self.chunk_shape[0]}) does not divide "
+                f"the total number of frames per datum ({self.datum_shape[0]}); "
+                f"coercing chunk_shape to ({self.datum_shape[0]},) (one file per datum).",
+                stacklevel=2,
             )
+            self.chunk_shape = (self.datum_shape[0],)
+
+        self._recompute_files_per_datum()
 
         # Compile and set the filename template
         self.template = compile_template(
             self._sres_parameters["template"], self._sres_parameters.get("filename", "")
+        )
+
+    def _recompute_files_per_datum(self):
+        """Refresh cached files_per_datum from current sres_parameters and shape.
+
+        Called at __init__ and again on each `update_from_stream_resource` so a
+        subsequent StreamResource with a different `files_per_datum` (or implied
+        by chunking) is honored.
+        """
+        self.files_per_datum = self._sres_parameters.get("files_per_datum") or (
+            self.datum_shape[0] // self.chunk_shape[0]
+            if self.join_method == "concat"
+            else self.metadata.get("frame_per_point", 1)
         )
 
     def get_datum_uri(self, indx: int):
@@ -717,23 +737,16 @@ class MultipartRelatedConsolidator(ConsolidatorBase):
         of the resulting dataset, and hence corresponds to a single file.
         """
 
-        files_per_datum = (
-            self.datum_shape[0] // self.chunk_shape[0]
-            if self.join_method == "concat"
-            else self.metadata.get("frame_per_point", 1)
-        )
-        first_file_indx = doc["indices"]["start"] * files_per_datum
-        last_file_indx = doc["indices"]["stop"] * files_per_datum
+        first_file_indx = doc["indices"]["start"] * self.files_per_datum
+        last_file_indx = doc["indices"]["stop"] * self.files_per_datum
         for indx in range(first_file_indx, last_file_indx):
-            new_datum_uri = self.get_datum_uri(indx)
             new_asset = Asset(
-                data_uri=new_datum_uri,
+                data_uri=self.get_datum_uri(indx),
                 is_directory=False,
                 parameter=self.default_asset_role,
                 num=len(self.assets),
             )
             self.assets.append(new_asset)
-            self.data_uris.append(new_datum_uri)
 
         return super().consume_stream_datum(doc)
 
@@ -744,6 +757,7 @@ class MultipartRelatedConsolidator(ConsolidatorBase):
         self.template = compile_template(
             self._sres_parameters["template"], self._sres_parameters.get("filename", "")
         )
+        self._recompute_files_per_datum()
         # Reset the file index counter to start from "0" for the new StreamResource template
         self._indx_offset = len(self.assets)
 
