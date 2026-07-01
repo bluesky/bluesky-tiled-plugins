@@ -237,7 +237,10 @@ class RunNormalizer(DocumentRouter):
         self._token_refs: dict[str, Callable] = {}
         self.dispatcher = Dispatcher()
         self.patches = patches or {}
-        self.spec_to_mimetype = MIMETYPE_LOOKUP | (spec_to_mimetype or {})
+        self.spec_to_mimetype = defaultdict(
+            lambda: "application/octet-stream",
+            {**MIMETYPE_LOOKUP, **(spec_to_mimetype or {})},
+        )
 
         self._next_frame_index: dict[tuple[str, str], dict[str, int]] = defaultdict(
             lambda: {"carry": 0, "index": 0}
@@ -982,8 +985,10 @@ class _RunWriter(DocumentRouter):
             raise
 
         finally:
-            # Write the stop document to the metadata, include any notes from normalizer
-            notes = doc.pop("_run_normalizer_notes", []) + self.notes
+            # Write the stop document to the metadata, include notes from the normalizer, if any
+            notes = list(
+                dict.fromkeys(doc.pop("_run_normalizer_notes", []) + self.notes)
+            )
             md_update = {"stop": doc, **({"notes": notes} if notes else {})}
             self.root_node.update_metadata(metadata=md_update, drop_revision=True)
 
@@ -1254,6 +1259,8 @@ class TiledWriter:
         spec_to_mimetype: dict[str, str] | None = None,
         backup_directory: str | None = None,
         batch_size: int = BATCH_SIZE,
+        max_array_size: int = MAX_ARRAY_SIZE,
+        validate: bool = False,
         **kwargs,
     ):
         client = from_uri(uri, **kwargs)
@@ -1264,6 +1271,8 @@ class TiledWriter:
             spec_to_mimetype=spec_to_mimetype,
             backup_directory=backup_directory,
             batch_size=batch_size,
+            max_array_size=max_array_size,
+            validate=validate,
         )
 
     @classmethod
@@ -1276,6 +1285,8 @@ class TiledWriter:
         spec_to_mimetype: dict[str, str] | None = None,
         backup_directory: str | None = None,
         batch_size: int = BATCH_SIZE,
+        max_array_size: int = MAX_ARRAY_SIZE,
+        validate: bool = False,
         **kwargs,
     ):
         client = from_profile(profile, **kwargs)
@@ -1286,6 +1297,8 @@ class TiledWriter:
             spec_to_mimetype=spec_to_mimetype,
             backup_directory=backup_directory,
             batch_size=batch_size,
+            max_array_size=max_array_size,
+            validate=validate,
         )
 
     def __call__(self, name, doc):
