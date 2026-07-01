@@ -35,8 +35,8 @@ _document_types = {
     "event_page": EventPage,
     "datum_page": DatumPage,
     "resource": Resource,
-    "stream_resource": StreamDatum,
-    "stream_datum": StreamResource,
+    "stream_resource": StreamResource,
+    "stream_datum": StreamDatum,
 }
 
 
