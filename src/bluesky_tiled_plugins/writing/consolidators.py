@@ -622,7 +622,7 @@ class HDF5Consolidator(ConsolidatorBase):
         asset = Asset(
             data_uri=stream_resource["uri"],
             is_directory=False,
-            parameter="data_uris",
+            parameter=self.default_asset_role,
             num=len(self.assets),
         )
         self.assets.append(asset)
@@ -701,7 +701,7 @@ class MultipartRelatedConsolidator(ConsolidatorBase):
             new_asset = Asset(
                 data_uri=new_datum_uri,
                 is_directory=False,
-                parameter="data_uris",
+                parameter=self.default_asset_role,
                 num=len(self.assets),
             )
             self.assets.append(new_asset)
