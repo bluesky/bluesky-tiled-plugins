@@ -478,7 +478,7 @@ def test_validate_external_data(client, external_assets_folder, error_type, vali
         None,
         [],
         ["FileNotFoundError", "No such file or directory"],
-        [r"(?i)Unable to synchronously open", "some other pattern that won't match"],
+        [r"(?i)Could not determine size of asset", r"(?i)Unable to synchronously open"],
     ),
 )
 @pytest.mark.filterwarnings("ignore::UserWarning")
