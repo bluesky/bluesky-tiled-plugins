@@ -65,14 +65,14 @@
       "stream_resource": "det-blob-single-uid",
       "descriptor": "{{ uuid }}-8c00740d9771",
       "uid": "det-blob-single-uid/0",
-      "indices": {"start": 0, "stop": 1},
-      "seq_nums": {"start": 1, "stop": 2}
+      "indices": { "start": 0, "stop": 1 },
+      "seq_nums": { "start": 1, "stop": 2 }
     }
   },
   {
     "name": "stream_resource",
     "doc": {
-      "parameters": {"template": "blob_{:05d}.bin"},
+      "parameters": { "template": "blob_{:05d}.bin" },
       "data_key": "det-blob-multi",
       "uri": "file://localhost/{{ root_path }}/blob_files/",
       "mimetype": "application/octet-stream",
@@ -86,8 +86,8 @@
       "stream_resource": "det-blob-multi-uid",
       "descriptor": "{{ uuid }}-8c00740d9771",
       "uid": "det-blob-multi-uid/0",
-      "indices": {"start": 0, "stop": 2},
-      "seq_nums": {"start": 1, "stop": 3}
+      "indices": { "start": 0, "stop": 2 },
+      "seq_nums": { "start": 1, "stop": 3 }
     }
   },
   {
@@ -96,8 +96,8 @@
       "stream_resource": "det-blob-multi-uid",
       "descriptor": "{{ uuid }}-8c00740d9771",
       "uid": "det-blob-multi-uid/1",
-      "indices": {"start": 2, "stop": 3},
-      "seq_nums": {"start": 3, "stop": 4}
+      "indices": { "start": 2, "stop": 3 },
+      "seq_nums": { "start": 3, "stop": 4 }
     }
   },
   {
@@ -108,7 +108,7 @@
       "run_start": "{{ uuid }}-9724b2201fe7",
       "exit_status": "success",
       "reason": "",
-      "num_events": {"primary": 3}
+      "num_events": { "primary": 3 }
     }
   }
 ]

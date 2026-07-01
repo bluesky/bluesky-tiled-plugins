@@ -835,6 +835,7 @@ def test_internal_arrays_written_as_zarr(client, max_array_size, expected_scheme
 
 
 @pytest.mark.parametrize("corrupt_uri", [False, True])
+@pytest.mark.filterwarnings("ignore::UserWarning")
 def test_bytes_roundtrip(client, external_assets_folder, corrupt_uri):
     """End-to-end registration of `bytes` data sources via `TiledWriter`.
 
