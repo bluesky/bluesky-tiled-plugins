@@ -12,7 +12,9 @@ from tiled.client.dataframe import DataFrameClient
 from tiled.client.utils import handle_error, retry_context
 from tiled.mimetypes import DEFAULT_ADAPTERS_BY_MIMETYPE
 from tiled.utils import safe_json_dump
+from tiled.storage import size_from_uri
 from tiled.structures.array import StructDtype, BuiltinDtype
+from tiled.structures.bytes import BytesStructure
 from tiled.structures.core import STRUCTURE_TYPES
 from tiled.structures.data_source import DataSource
 from ..utils import list_summands
@@ -272,6 +274,14 @@ def validate_data_source(
     else:
         data_source, notes = copy.deepcopy(data_source), []
     structure = data_source.structure
+
+    # Update the sizes of Assets
+    for ast in data_source.assets:
+        ast.size = size_from_uri(ast.data_uri)
+
+    # If this is a data source with BytesStructure, we cannot validate it further
+    if isinstance(structure, BytesStructure):
+        return data_source, notes
 
     # Initialize adapter from uris and determine the structure as read by the adapter
     uris = [asset.data_uri for asset in data_source.assets]

@@ -672,6 +672,7 @@ class NPYConsolidator(MultipartRelatedConsolidator):
 CONSOLIDATOR_REGISTRY = collections.defaultdict(
     lambda: ConsolidatorBase,
     {
+        "application/octet-stream": BytesConsolidator,
         "text/csv;header=absent": CSVConsolidator,
         "application/x-hdf5": HDF5Consolidator,
         "multipart/related;type=image/tiff": TIFFConsolidator,
