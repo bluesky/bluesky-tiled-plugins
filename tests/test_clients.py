@@ -1,3 +1,5 @@
+import uuid
+
 import pytest
 from examples.render import render_templated_documents
 
@@ -20,3 +22,62 @@ def run_client(client, external_assets_folder, request):
 def test_documents(run_client):
     assert len(list(run_client.v3.documents())) > 0
     assert len(list(run_client.v2.documents())) > 0
+
+
+@pytest.mark.parametrize(
+    "fixture_name",
+    [
+        "internal_events",
+        pytest.param(
+            "external_assets",
+            marks=pytest.mark.xfail(
+                strict=True,
+                reason=(
+                    "Exporter cannot reconstruct external stream_resource "
+                    "parameters (template, filename, chunk_shape) because "
+                    "DataSource.parameters only stores adapter kwargs."
+                ),
+            ),
+        ),
+    ],
+)
+def test_export_roundtrip_preserves_structure(
+    client, external_assets_folder, fixture_name
+):
+    """Export a run via `application/json-seq` and re-ingest it through
+    `TiledWriter`; the roundtripped run must have the same stream layout
+    and per-key shapes as the original.
+
+    `max_array_size=-1` keeps all internal array data internal so the
+    exporter does not have to synthesize stream_resource parameters for
+    generated zarr assets.
+    """
+    tw = TiledWriter(client, max_array_size=-1)
+    original_uid = None
+    for item in render_templated_documents(
+        f"{fixture_name}.json", external_assets_folder
+    ):
+        if item["name"] == "start":
+            original_uid = item["doc"]["uid"]
+        tw(**item)
+
+    original = client[original_uid]
+    docs = list(original.v3.documents())
+
+    new_uid = uuid.uuid4().hex
+    tw2 = TiledWriter(client, max_array_size=-1)
+    for name, doc in docs:
+        d = dict(doc)
+        if name == "start":
+            d["uid"] = new_uid
+        elif d.get("run_start") == original_uid:
+            d["run_start"] = new_uid
+        tw2(name=name, doc=d)
+
+    roundtripped = client[new_uid]
+
+    assert set(original.keys()) == set(roundtripped.keys())
+    for stream in original.keys():
+        assert set(original[stream].keys()) == set(roundtripped[stream].keys())
+        for key in original[stream].keys():
+            assert original[stream][key].shape == roundtripped[stream][key].shape

@@ -73,7 +73,7 @@ def compile_template(template: str, filename: str = "") -> str:
         if precision and width:
             flag_str = "0"
             precision_str = ""
-            width_str = str(max(precision, width))
+            width_str = str(max(int(precision), int(width)))
 
         # Construct the new-style format specifier
         return f"{{:{flag_str}{width_str}{precision_str}{type_char}}}"

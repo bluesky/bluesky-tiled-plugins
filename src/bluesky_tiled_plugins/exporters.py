@@ -133,17 +133,17 @@ async def json_seq_exporter(mimetype, adapter, metadata, filter_for_access):
             total_shape = ds.structure.shape
             datum_shape = desc_node.metadata()["data_keys"][data_key]["shape"]
 
-            max_indx = (
-                total_shape[0] // datum_shape[0] - 1
+            n_datums = (
+                total_shape[0] // datum_shape[0]
                 if len(total_shape) == len(datum_shape)
-                else total_shape[0] - 1
+                else total_shape[0]
             )
             sdat_doc = {
                 "uid": sdat_uid,
                 "stream_resource": sres_uid,
                 "descriptor": desc_uid,
-                "indices": {"start": 0, "stop": max_indx},
-                "seq_nums": {"start": 1, "stop": max_indx + 1},
+                "indices": {"start": 0, "stop": n_datums},
+                "seq_nums": {"start": 1, "stop": n_datums + 1},
             }
             result.append({"name": "stream_datum", "doc": sdat_doc})
 
@@ -152,7 +152,7 @@ async def json_seq_exporter(mimetype, adapter, metadata, filter_for_access):
         result,
         key=lambda x: (
             x["doc"].get("time", float("inf")),
-            {"stream_resource": 0, "stream_datum": 1}.get(x["name"]),
+            {"stream_resource": 0, "stream_datum": 1}.get(x["name"], 2),
         ),
     )
 

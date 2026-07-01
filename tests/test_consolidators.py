@@ -581,6 +581,8 @@ template_testdata = [
     ("img", "%s_%-+6d", "img_{:<+6d}", "img_+42   "),
     ("img", "%s_%- 6d", "img_{:< 6d}", "img_ 42   "),
     ("img", "%s_%6.6d", "img_{:06d}", "img_000042"),
+    # Width lexicographically less than precision must still take the numeric max (10, not "9").
+    ("img", "%s_%9.10d", "img_{:010d}", "img_0000000042"),
 ]
 
 

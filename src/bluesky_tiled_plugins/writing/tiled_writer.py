@@ -1,6 +1,7 @@
 import copy
 import itertools
 import logging
+import math
 from collections import defaultdict, deque, namedtuple
 from collections.abc import Callable
 from dataclasses import asdict
@@ -509,9 +510,9 @@ class RunNormalizer(DocumentRouter):
         )
         for key in self._ext_keys:
             if key in data_keys:
-                data_keys[key]["external"] = data_keys[key].pop(
-                    "external", ""
-                )  # Make sure the value is not None
+                # Make sure the value of "external" is not None
+                if data_keys[key].get("external") is None:
+                    data_keys[key]["external"] = ""
 
         # Keep a reference to the descriptor name (stream) by its uid
         self._desc_name_by_uid[doc["uid"]] = doc["name"]
@@ -1011,7 +1012,7 @@ class _RunWriter(DocumentRouter):
                 if ("external" not in val.keys()) and (val.get("dtype") == "array"):
                     if None in val.get("shape", ()):
                         self._int_ragged_array_keys[desc_name].add(key)
-                    elif 0 <= self._max_array_size < sum(val.get("shape", ())):
+                    elif 0 <= self._max_array_size < math.prod(val.get("shape", ())):
                         self._int_array_keys[desc_name].add(key)
         else:
             # Rare Case: This new descriptor likely updates stream configs mid-experiment
