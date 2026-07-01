@@ -172,12 +172,17 @@ async def json_seq_exporter(mimetype, adapter, metadata, filter_for_access):
             # consolidator.
             datum_offset = 0
             if len(asset_uris) > 1 and "template" not in parameters:
-                base_uri, template, start_index = _synthesize_multipart_template(asset_uris)
+                base_uri, template, start_index = _synthesize_multipart_template(
+                    asset_uris
+                )
                 if template is not None:
                     uri = base_uri
                     parameters["template"] = template
                     parameters.setdefault("chunk_shape", [1])
-                    parameters.setdefault("join_method", "stack" if is_stacked else "concat")
+                    parameters.setdefault(
+                        "join_method", "stack" if is_stacked else "concat"
+                    )
+
                     # If files don't start at index 0, offset the datum
                     # indices so consolidator regenerates the same URIs.
                     if start_index and datum_shape[0]:

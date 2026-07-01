@@ -352,17 +352,13 @@ class _BlueskyRunSQL(BlueskyRun):
     def _keys_slice(
         self, start, stop, direction, page_size: int | None = None, **kwargs
     ):
-        sorted_keys = (
-            self._stream_names[::-1] if direction < 0 else self._stream_names
-        )
+        sorted_keys = self._stream_names[::-1] if direction < 0 else self._stream_names
         return (yield from sorted_keys[start:stop])
 
     def _items_slice(
         self, start, stop, direction, page_size: int | None = None, **kwargs
     ):
-        sorted_keys = (
-            self._stream_names[::-1] if direction < 0 else self._stream_names
-        )
+        sorted_keys = self._stream_names[::-1] if direction < 0 else self._stream_names
         for key in sorted_keys[start:stop]:
             yield key, self[key]
 
@@ -379,11 +375,9 @@ class _BlueskyRunSQL(BlueskyRun):
             self.export(buffer, format="application/json-seq")
             buffer.seek(0)
             for line in buffer:
-                stripped = line.decode().strip()
-                if not stripped:
-                    continue
-                parsed = json.loads(stripped)
-                yield parsed["name"], _document_types[parsed["name"]](parsed["doc"])
+                if stripped := line.decode().strip():
+                    parsed = json.loads(stripped)
+                    yield parsed["name"], _document_types[parsed["name"]](parsed["doc"])
 
 
 class BlueskyRunV2SQL(BlueskyRunV2, _BlueskyRunSQL):
