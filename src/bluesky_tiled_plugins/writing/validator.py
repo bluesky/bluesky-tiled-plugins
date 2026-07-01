@@ -150,9 +150,10 @@ def validate(
         logger.warning(msg)
     if notes and write_notes:
         existing_notes = root_client.metadata.get("notes", [])
-        root_client.update_metadata(
-            {"notes": existing_notes + notes}, drop_revision=True
-        )
+        # Preserve order, drop duplicates so repeat validation is idempotent.
+        merged_notes = list(dict.fromkeys(existing_notes + notes))
+        if merged_notes != existing_notes:
+            root_client.update_metadata({"notes": merged_notes}, drop_revision=True)
 
     return not errored_keys
 

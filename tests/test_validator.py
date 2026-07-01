@@ -259,3 +259,57 @@ def test_validate_bluesky_run_failure(
     # There should be validation notes about the fixes applied
     notes = client[uid].metadata.get("notes", [])
     assert any("Fixed shape mismatch" in note for note in notes)
+
+    # Repeated validation is idempotent: existing notes are not duplicated,
+    # and no new notes are appended when there is nothing left to fix.
+    notes_before = list(client[uid].metadata.get("notes", []))
+    if use_client_method:
+        assert client[uid].validate(fix_errors=True) is True
+    else:
+        assert validate(client[uid], fix_errors=True) is True
+    notes_after = list(client[uid].metadata.get("notes", []))
+    assert notes_after == notes_before
+
+
+@pytest.mark.filterwarnings(
+    "ignore",
+    category=UserWarning,
+    match="Tiled server does not support remote validation",
+)
+def test_validate_notes_dedupe_on_repeat_with_ignored_errors(
+    client, external_assets_folder
+):
+    """When a persistent (ignored) error would produce the same note on every
+    validate() call, notes are deduped so repeat validation is idempotent."""
+    tw = TiledWriter(client, validate=False)
+    documents = render_templated_documents(
+        "external_assets_single_key.json", external_assets_folder
+    )
+    for item in documents:
+        name, doc = item["name"], item["doc"]
+        if name == "start":
+            uid = doc["uid"]
+        # Introduce a persistent structure error that cannot be fixed
+        if name == "descriptor":
+            doc["data_keys"]["det-key2"]["shape"] = [1, 2, 3]
+        tw(name, doc)
+
+    ignore = ["Shape mismatch"]
+    # First run: appends a "failed with error: ... Shape mismatch ..." note.
+    assert (
+        validate(client[uid], fix_errors=False, ignore_errors=ignore, try_reading=False)
+        is True
+    )
+    notes_after_first = list(client[uid].metadata.get("notes", []))
+    assert any("Shape mismatch" in n for n in notes_after_first)
+
+    # Second and third runs must not duplicate the same note.
+    for _ in range(2):
+        assert (
+            validate(
+                client[uid], fix_errors=False, ignore_errors=ignore, try_reading=False
+            )
+            is True
+        )
+    notes_after_repeats = list(client[uid].metadata.get("notes", []))
+    assert notes_after_repeats == notes_after_first
