@@ -6,6 +6,7 @@ from typing import Literal, cast, Optional
 import numpy as np
 from event_model.documents import EventDescriptor, StreamDatum, StreamResource
 from tiled.mimetypes import DEFAULT_ADAPTERS_BY_MIMETYPE
+from tiled.storage import size_from_uri
 from tiled.structures.array import ArrayStructure, BuiltinDtype, StructDtype
 from tiled.structures.bytes import BytesStructure
 from tiled.structures.core import StructureFamily
@@ -474,6 +475,14 @@ class ConsolidatorBase:
 
 
 class BytesConsolidator:
+    """Consolidator for opaque binary files registered as the `bytes` structure family.
+
+    Unlike `ConsolidatorBase`, this consolidator does not interpret or reshape
+    the data: each StreamDatum yields one or more `Asset`s carrying a file URI,
+    and the corresponding Tiled node is a `bytes` node whose data can be
+    downloaded but not sliced or read as an array.
+    """
+
     supported_mimetypes: set[str] = {"application/octet-stream"}
     default_asset_role: str = "data_uris"  # Default parameter (role) for the asset(s)
 
@@ -484,14 +493,18 @@ class BytesConsolidator:
         self.data_key: str = stream_resource["data_key"]
         self.uri: str = stream_resource["uri"]
         self.assets: list[Asset] = []
+        self._indx_offset: int = 0
 
         self.update_from_stream_resource(stream_resource)
 
+        # Preserve the originating Bluesky spec (if any) as metadata for
+        # consistency with ConsolidatorBase.
+        if spec := stream_resource["parameters"].get("spec"):
+            self.metadata["spec"] = spec
+
     @classmethod
     def get_supported_mimetype(cls, sres):
-        if (cls is not ConsolidatorBase) and (
-            sres["mimetype"] not in cls.supported_mimetypes
-        ):
+        if sres["mimetype"] not in cls.supported_mimetypes:
             raise ValueError(
                 f"A data source of {sres['mimetype']} type can not be handled by {cls.__name__}."
             )
@@ -513,7 +526,7 @@ class BytesConsolidator:
         return self.uri
 
     def consume_stream_datum(self, doc: StreamDatum):
-        """Determine the number and names of files from indices of datums"""
+        """Register one Asset per file index in the incoming StreamDatum."""
         first_file_indx = doc["indices"]["start"]
         last_file_indx = doc["indices"]["stop"]
         for indx in range(first_file_indx, last_file_indx):
@@ -539,6 +552,19 @@ class BytesConsolidator:
 
         # Reset the file index counter to start from "0" for the new StreamResource template
         self._indx_offset = len(self.assets)
+
+    def validate(self, fix_errors: bool = False) -> list[str]:
+        """Verify each registered asset is reachable; bytes payloads are otherwise opaque."""
+        from .validator import AssetValidationException
+
+        for ast in self.assets:
+            try:
+                size_from_uri(ast.data_uri)
+            except (FileNotFoundError, OSError, ValueError) as e:
+                raise AssetValidationException(
+                    f"Could not determine size of asset {ast.data_uri}: {e}"
+                ) from e
+        return []
 
     def get_data_source(self) -> DataSource:
         return DataSource(

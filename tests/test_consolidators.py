@@ -3,10 +3,14 @@ from math import ceil
 import pytest
 
 from bluesky_tiled_plugins.writing.consolidators import (
+    BytesConsolidator,
     HDF5Consolidator,
     Patch,
     consolidator_factory,
 )
+from tiled.structures.bytes import BytesStructure
+from tiled.structures.core import StructureFamily
+from tiled.structures.data_source import Management
 
 
 @pytest.fixture
@@ -93,18 +97,24 @@ def descriptor():
 
 @pytest.fixture
 def hdf5_stream_resource_factory():
-    return lambda data_key, chunk_shape: {
-        "data_key": data_key,
-        "mimetype": "application/x-hdf5",
-        "uri": "file://localhost/test/file/path",
-        "resource_path": "test_file.h5",
-        "parameters": {
+    def _make(data_key, chunk_shape, spec=None):
+        parameters = {
             "dataset": f"entry/data/{data_key}",
             "swmr": True,
             "chunk_shape": chunk_shape,
-        },
-        "uid": f"stream-resource-uid-{data_key}",
-    }
+        }
+        if spec is not None:
+            parameters["spec"] = spec
+        return {
+            "data_key": data_key,
+            "mimetype": "application/x-hdf5",
+            "uri": "file://localhost/test/file/path",
+            "resource_path": "test_file.h5",
+            "parameters": parameters,
+            "uid": f"stream-resource-uid-{data_key}",
+        }
+
+    return _make
 
 
 @pytest.fixture
@@ -148,6 +158,29 @@ def stream_datum_factory():
         "stream_resource": f"stream-resource-uid-{data_key}",
         "uid": f"stream-datum-uid-{data_key}/{indx}",
     }
+
+
+@pytest.fixture
+def bytes_stream_resource_factory():
+    def _make(data_key, template=None, filename="", spec=None):
+        parameters: dict = {}
+        if template is not None:
+            parameters["template"] = template
+        if filename:
+            parameters["filename"] = filename
+        if spec is not None:
+            parameters["spec"] = spec
+        return {
+            "data_key": data_key,
+            "mimetype": "application/octet-stream",
+            "uri": "file://localhost/test/file/path/"
+            if template is not None
+            else "file://localhost/test/file/path/blob.bin",
+            "parameters": parameters,
+            "uid": f"stream-resource-uid-{data_key}",
+        }
+
+    return _make
 
 
 # Tuples of (data_key, frames_per_datum, join_method, expected_shape)
@@ -596,6 +629,137 @@ def test_combine_patches(patches, expected_shape, expected_offset):
     combined = Patch.combine_patches(patches)
     assert combined.shape == expected_shape
     assert combined.offset == expected_offset
+
+
+# Tuples of (template, filename, expected_template, ranges, expected_suffixes)
+# where `ranges` is a list of (start, stop) index pairs for successive
+# stream_datum documents, and `expected_suffixes` is the URI suffix each
+# resulting Asset should end with.
+bytes_asset_testdata = [
+    # No template: one asset reusing the base URI.
+    (None, "", None, [(0, 1)], ["blob.bin"]),
+    # New-style template, two batches.
+    (
+        "blob_{:05d}.bin",
+        "",
+        "blob_{:05d}.bin",
+        [(0, 3), (3, 5)],
+        [f"blob_{i:05d}.bin" for i in range(5)],
+    ),
+    # Legacy `%s_%06d` template with filename prefix.
+    (
+        "%s_%06d.bin",
+        "scan",
+        "scan_{:06d}.bin",
+        [(0, 1)],
+        ["scan_000000.bin"],
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "template, filename, expected_template, ranges, expected_suffixes",
+    bytes_asset_testdata,
+)
+def test_bytes_asset_generation(
+    descriptor,
+    bytes_stream_resource_factory,
+    template,
+    filename,
+    expected_template,
+    ranges,
+    expected_suffixes,
+):
+    """`BytesConsolidator` registers one Asset per file index, honoring the
+    (optional) filename template, and produces a `bytes` DataSource."""
+    sres = bytes_stream_resource_factory(
+        data_key="test_img", template=template, filename=filename
+    )
+    cons = BytesConsolidator(sres, descriptor)
+    assert cons.template == expected_template
+    assert cons.assets == []
+
+    for i, (start, stop) in enumerate(ranges):
+        patch = cons.consume_stream_datum({"indices": {"start": start, "stop": stop}})
+        assert patch == Patch(offset=(start,), shape=(stop - start,))
+
+    uris = [a.data_uri for a in cons.assets]
+    assert [u.split("/")[-1] for u in uris] == expected_suffixes
+    assert [a.num for a in cons.assets] == list(range(len(cons.assets)))
+    assert all(a.parameter == "data_uris" for a in cons.assets)
+    assert all(a.is_directory is False for a in cons.assets)
+
+    ds = cons.get_data_source()
+    assert ds.structure_family == StructureFamily.bytes
+    assert isinstance(ds.structure, BytesStructure)
+    assert ds.mimetype == "application/octet-stream"
+    assert ds.management == Management.external
+    assert ds.parameters == {} and ds.properties == {}
+    assert len(ds.assets) == len(expected_suffixes)
+
+
+def test_bytes_update_from_stream_resource_resets_index_offset(
+    descriptor, bytes_stream_resource_factory
+):
+    """A second StreamResource restarts the template index at 0 relative to
+    the new batch, so files land at the correct name."""
+    sres1 = bytes_stream_resource_factory(data_key="test_img", template="a_{:03d}.bin")
+    cons = BytesConsolidator(sres1, descriptor)
+    cons.consume_stream_datum({"indices": {"start": 0, "stop": 2}})
+    assert cons.assets[-1].data_uri.endswith("a_001.bin")
+
+    sres2 = bytes_stream_resource_factory(data_key="test_img", template="b_{:03d}.bin")
+    cons.update_from_stream_resource(sres2)
+    assert cons.template == "b_{:03d}.bin"
+    cons.consume_stream_datum({"indices": {"start": 2, "stop": 4}})
+    # Second batch starts at "0" for the new template, not at "2".
+    assert cons.assets[2].data_uri.endswith("b_000.bin")
+    assert cons.assets[3].data_uri.endswith("b_001.bin")
+
+
+@pytest.mark.parametrize(
+    "spec, expected_metadata",
+    [(None, {}), ("MY_SPEC", {"spec": "MY_SPEC"})],
+)
+@pytest.mark.parametrize(
+    "cons_cls, sres_factory_name, factory_kwargs",
+    [
+        (BytesConsolidator, "bytes_stream_resource_factory", {}),
+        (HDF5Consolidator, "hdf5_stream_resource_factory", {"chunk_shape": ()}),
+    ],
+    ids=["bytes", "hdf5"],
+)
+def test_spec_metadata_propagation(
+    request,
+    descriptor,
+    cons_cls,
+    sres_factory_name,
+    factory_kwargs,
+    spec,
+    expected_metadata,
+):
+    """The `spec` StreamResource parameter is propagated to consolidator metadata
+    the same way for `BytesConsolidator` and (any subclass of) `ConsolidatorBase`."""
+    sres_factory = request.getfixturevalue(sres_factory_name)
+    sres = sres_factory(data_key="test_img", spec=spec, **factory_kwargs)
+    cons = cons_cls(sres, descriptor)
+    assert cons.metadata == expected_metadata
+
+
+def test_bytes_factory_validate_and_mimetype_guard(
+    descriptor, bytes_stream_resource_factory
+):
+    """`consolidator_factory` dispatches to `BytesConsolidator`, `validate`
+    succeeds when assets are reachable, and an unsupported mimetype is rejected."""
+    sres = bytes_stream_resource_factory(data_key="test_img")
+    cons = consolidator_factory(sres, descriptor)
+    assert isinstance(cons, BytesConsolidator)
+    assert cons.validate() == []
+    assert cons.validate(fix_errors=True) == []
+
+    sres["mimetype"] = "application/x-hdf5"
+    with pytest.raises(ValueError, match="can not be handled by BytesConsolidator"):
+        BytesConsolidator(sres, descriptor)
 
 
 # Tuples of (uri, template, expected_uri).

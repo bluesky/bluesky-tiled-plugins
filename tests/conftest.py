@@ -111,6 +111,14 @@ def external_assets_folder(tmp_path_factory):
         data = rng.integers(0, 255, size=(1, 10, 15), dtype="uint8")
         tf.imwrite(temp_dir.joinpath("tiff_files", f"img_{i:05}.tif"), data)
 
+    # Create an opaque binary blob (single-file bytes stream) and a
+    # sequence of blobs (multi-file bytes stream with a filename template).
+    temp_dir.joinpath("blob.bin").write_bytes(b"\x00\x01\x02opaque-blob\xff")
+    (temp_dir / "blob_files").mkdir(parents=True, exist_ok=True)
+    for i in range(3):
+        payload = f"payload-{i}".encode() + bytes([i])
+        temp_dir.joinpath("blob_files", f"blob_{i:05d}.bin").write_bytes(payload)
+
     return str(temp_dir.absolute()).replace("\\", "/")
 
 

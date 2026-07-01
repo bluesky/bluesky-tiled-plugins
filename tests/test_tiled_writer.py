@@ -832,3 +832,57 @@ def test_internal_arrays_written_as_zarr(client, max_array_size, expected_scheme
         assert "long" not in run["primary"].base
         assert "long" in internal_table.columns
         assert run["primary"]["long"].data_sources() is None
+
+
+@pytest.mark.parametrize("corrupt_uri", [False, True])
+def test_bytes_roundtrip(client, external_assets_folder, corrupt_uri):
+    """End-to-end registration of `bytes` data sources via `TiledWriter`.
+
+    Covers both a single-file stream resource and a multi-file (templated)
+    stream resource in one run. When `corrupt_uri` is set, the URIs are
+    munged so the files do not exist -- validation must raise
+    `ValidationException` (surfaced from `AssetValidationException`) rather
+    than silently accepting the missing assets.
+    """
+    tw = TiledWriter(client, validate=True)
+    uid = None
+    documents = list(
+        render_templated_documents("external_assets_bytes.json", external_assets_folder)
+    )
+    for item in documents:
+        name, doc = item["name"], item["doc"]
+        if name == "start":
+            uid = doc["uid"]
+        if corrupt_uri and name == "stream_resource":
+            doc["uri"] += "_missing"
+        if corrupt_uri and name == "stop":
+            with pytest.raises(ValidationException):
+                tw(name, doc)
+        else:
+            tw(name, doc)
+
+    if corrupt_uri:
+        # The run was created but validation on stop raised;
+        # nothing further to assert about the (unwritten) sizes.
+        assert uid in client
+        return
+
+    run = client[uid]
+
+    single = run["primary"]["det-blob-single"].data_sources()[0]
+    multi = run["primary"]["det-blob-multi"].data_sources()[0]
+
+    assert single.structure_family == "bytes"
+    assert single.mimetype == "application/octet-stream"
+    assert len(single.assets) == 1
+    assert single.assets[0].data_uri.endswith("/blob.bin")
+
+    assert multi.structure_family == "bytes"
+    assert len(multi.assets) == 3
+    for i, asset in enumerate(multi.assets):
+        assert asset.data_uri.endswith(f"blob_{i:05d}.bin")
+
+    # With the remote validator router (app1) sizes are populated;
+    # with the local fallback (app0) they remain unset.
+    assert single.assets[0].size in (None, 15)
+    assert all(a.size in (None, 10) for a in multi.assets)
