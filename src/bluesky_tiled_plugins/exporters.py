@@ -1,6 +1,41 @@
 import copy
 import json
+import os
+import re
 from collections import defaultdict
+
+
+def _synthesize_multipart_template(uris):
+    """Infer an old-style filename template from a list of concrete URIs.
+
+    Given URIs like ``file:///.../frame_000000.tif``, ``.../frame_000001.tif``,
+    return ``(base_uri, template, start_index)`` such that
+    ``base_uri + template % (start_index + i) == uris[i]`` for every ``i``.
+
+    Returns ``(None, None, None)`` if the URIs don't fit a single numeric-field
+    pattern; callers should fall back to a different strategy in that case.
+    """
+    if not uris:
+        return None, None, None
+    if len(uris) == 1:
+        # Nothing to infer; treat the whole URI as the base.
+        return uris[0], "", 0
+    prefix = os.path.commonprefix(uris)
+    slash = prefix.rfind("/")
+    prefix = prefix[: slash + 1] if slash >= 0 else prefix
+    suffix0 = uris[0][len(prefix) :]
+    match = re.search(r"\d+", suffix0)
+    if not match:
+        return None, None, None
+    lo, hi = match.span()
+    width = hi - lo
+    pre, post = suffix0[:lo], suffix0[hi:]
+    start_index = int(suffix0[lo:hi])
+    template = f"{pre}%0{width}d{post}"
+    for i, u in enumerate(uris):
+        if u != prefix + template % (start_index + i):
+            return None, None, None
+    return prefix, template, start_index
 
 
 async def json_seq_exporter(mimetype, adapter, metadata, filter_for_access):
@@ -113,37 +148,73 @@ async def json_seq_exporter(mimetype, adapter, metadata, filter_for_access):
             # Loop over data_keys for external data only
             sres_uid = f"sr-{desc_uid}-{data_key}"  # can be anything (unique)
             ds = (await desc_node.lookup_adapter([data_key])).data_sources[0]
-            uri = ds.assets[0].data_uri
-            for ast in ds.assets:
-                if ast.parameter in {"data_uris", "data_uri"}:
-                    uri = ast.data_uri
-                    break
+            asset_uris = [
+                a.data_uri
+                for a in sorted(ds.assets, key=lambda a: (a.num or 0))
+                if a.parameter in {"data_uris", "data_uri"}
+            ]
+            parameters = dict(ds.parameters)
+
+            total_shape = ds.structure.shape
+            datum_shape = desc_node.metadata()["data_keys"][data_key]["shape"]
+            # Infer join_method from the relationship between total_shape and
+            # datum_shape. `stack` adds a leading dimension per datum;
+            # `concat` merges datums along an existing leading dimension.
+            is_stacked = len(total_shape) == len(datum_shape) + 1
+            n_datums = (
+                total_shape[0] if is_stacked else total_shape[0] // datum_shape[0]
+            )
+
+            # Multi-file (multipart) data sources persist adapter-only
+            # parameters and drop the original filename template. Re-derive
+            # a template from the concrete asset URIs so the emitted
+            # stream_resource can be re-ingested by a MultipartRelated
+            # consolidator.
+            datum_offset = 0
+            if len(asset_uris) > 1 and "template" not in parameters:
+                base_uri, template, start_index = _synthesize_multipart_template(
+                    asset_uris
+                )
+                if template is not None:
+                    uri = base_uri
+                    parameters["template"] = template
+                    parameters.setdefault("chunk_shape", [1])
+                    parameters.setdefault(
+                        "join_method", "stack" if is_stacked else "concat"
+                    )
+                    # If files don't start at index 0, offset the datum
+                    # indices so consolidator regenerates the same URIs.
+                    if start_index and datum_shape[0]:
+                        datum_offset = start_index // datum_shape[0]
+                else:
+                    uri = asset_uris[0]
+            else:
+                uri = asset_uris[0] if asset_uris else ds.assets[0].data_uri
+
             sres_doc = {
                 "data_key": data_key,
                 "uid": sres_uid,
                 "run_start": metadata.get("start", {}).get("uid"),
                 "mimetype": ds.mimetype,
-                "parameters": ds.parameters,
+                "parameters": parameters,
                 "uri": uri,
             }
             result.append({"name": "stream_resource", "doc": sres_doc})
 
             # Generate a single stream_datum document for the entire stream
             sdat_uid = f"sd-{desc_uid}-{data_key}-0"  # can be anything (unique)
-            total_shape = ds.structure.shape
-            datum_shape = desc_node.metadata()["data_keys"][data_key]["shape"]
-
-            n_datums = (
-                total_shape[0] // datum_shape[0]
-                if len(total_shape) == len(datum_shape)
-                else total_shape[0]
-            )
             sdat_doc = {
                 "uid": sdat_uid,
                 "stream_resource": sres_uid,
                 "descriptor": desc_uid,
-                "indices": {"start": 0, "stop": n_datums},
-                "seq_nums": {"start": 1, "stop": n_datums + 1},
+                "indices": {
+                    "start": datum_offset,
+                    "stop": datum_offset + n_datums,
+                },
+                "seq_nums": {
+                    "start": datum_offset + 1,
+                    "stop": datum_offset + n_datums + 1,
+                },
             }
             result.append({"name": "stream_datum", "doc": sdat_doc})
 

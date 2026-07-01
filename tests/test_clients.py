@@ -24,23 +24,7 @@ def test_documents(run_client):
     assert len(list(run_client.v2.documents())) > 0
 
 
-@pytest.mark.parametrize(
-    "fixture_name",
-    [
-        "internal_events",
-        pytest.param(
-            "external_assets",
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason=(
-                    "Exporter cannot reconstruct external stream_resource "
-                    "parameters (template, filename, chunk_shape) because "
-                    "DataSource.parameters only stores adapter kwargs."
-                ),
-            ),
-        ),
-    ],
-)
+@pytest.mark.parametrize("fixture_name", ["internal_events", "external_assets"])
 def test_export_roundtrip_preserves_structure(
     client, external_assets_folder, fixture_name
 ):
