@@ -24,6 +24,22 @@ def test_documents(run_client):
     assert len(list(run_client.v2.documents())) > 0
 
 
+def test_reversed_iteration(run_client):
+    """`keys()` and `items()` views must support reverse slicing on both a
+    BlueskyRun (stream names) and a `CompositeSubsetClient` (data-key
+    subset). Slicing the KeysView directly (not a materialized list) is
+    what exercises the client's `_keys_slice` / `_items_slice` overrides.
+    """
+    forward_stream_names = list(run_client.keys())
+    assert list(run_client.keys()[::-1]) == forward_stream_names[::-1]
+    assert [k for k, _ in run_client.items()[::-1]] == forward_stream_names[::-1]
+
+    data = run_client.v2[forward_stream_names[0]]["data"]
+    forward_data_keys = list(data.keys())
+    assert list(data.keys()[::-1]) == forward_data_keys[::-1]
+    assert [k for k, _ in data.items()[::-1]] == forward_data_keys[::-1]
+
+
 @pytest.mark.parametrize("fixture_name", ["internal_events", "external_assets"])
 def test_export_roundtrip_preserves_structure(
     client, external_assets_folder, fixture_name

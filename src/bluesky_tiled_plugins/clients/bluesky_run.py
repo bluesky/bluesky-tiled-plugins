@@ -350,7 +350,7 @@ class _BlueskyRunSQL(BlueskyRun):
         self, start, stop, direction, page_size: int | None = None, **kwargs
     ):
         sorted_keys = (
-            reversed(self._stream_names) if direction < 0 else self._stream_names
+            self._stream_names[::-1] if direction < 0 else self._stream_names
         )
         return (yield from sorted_keys[start:stop])
 
@@ -358,7 +358,7 @@ class _BlueskyRunSQL(BlueskyRun):
         self, start, stop, direction, page_size: int | None = None, **kwargs
     ):
         sorted_keys = (
-            reversed(self._stream_names) if direction < 0 else self._stream_names
+            self._stream_names[::-1] if direction < 0 else self._stream_names
         )
         for key in sorted_keys[start:stop]:
             yield key, self[key]

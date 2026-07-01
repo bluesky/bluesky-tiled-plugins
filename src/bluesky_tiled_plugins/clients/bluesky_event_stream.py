@@ -264,12 +264,18 @@ class CompositeSubsetClient(CompositeClient):
     def _keys_slice(
         self, start, stop, direction, page_size: int | None = None, **kwargs
     ):
-        yield from self._keys[start : stop : -1 if direction < 0 else 1]  # noqa: 203
+        keys = self._keys[start:stop]
+        if direction < 0:
+            keys = keys[::-1]
+        yield from keys
 
     def _items_slice(
         self, start, stop, direction, page_size: int | None = None, **kwargs
     ):
-        for key in self._keys[start : stop : -1 if direction < 0 else 1]:  # noqa: 203
+        keys = self._keys[start:stop]
+        if direction < 0:
+            keys = keys[::-1]
+        for key in keys:
             yield key, self[key]
 
     def __iter__(self):
