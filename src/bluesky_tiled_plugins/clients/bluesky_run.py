@@ -1,3 +1,4 @@
+import codecs
 import copy
 import functools
 import httpx
@@ -228,8 +229,9 @@ class BlueskyRunV2Mongo(BlueskyRunV2):
                         response.read()
                         handle_error(response)
                     tail = ""
+                    decoder = codecs.getincrementaldecoder("utf-8")()
                     for chunk in response.iter_bytes():
-                        for line in chunk.decode().splitlines(keepends=True):
+                        for line in decoder.decode(chunk).splitlines(keepends=True):
                             if line[-1] == "\n":
                                 item = json.loads(tail + line)
                                 yield (
@@ -239,6 +241,7 @@ class BlueskyRunV2Mongo(BlueskyRunV2):
                                 tail = ""
                             else:
                                 tail += line
+                    tail += decoder.decode(b"", final=True)
                     if tail:
                         item = json.loads(tail)
                         yield (item["name"], _document_types[item["name"]](item["doc"]))
@@ -376,7 +379,10 @@ class _BlueskyRunSQL(BlueskyRun):
             self.export(buffer, format="application/json-seq")
             buffer.seek(0)
             for line in buffer:
-                parsed = json.loads(line.decode().strip())
+                stripped = line.decode().strip()
+                if not stripped:
+                    continue
+                parsed = json.loads(stripped)
                 yield parsed["name"], _document_types[parsed["name"]](parsed["doc"])
 
 
