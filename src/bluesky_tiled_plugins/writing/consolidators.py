@@ -1,10 +1,7 @@
 import collections
 import dataclasses
-import importlib
-import math
 import warnings
 from typing import Literal, cast, Optional
-from pathlib import Path
 
 import numpy as np
 from event_model.documents import EventDescriptor, StreamDatum, StreamResource
@@ -13,7 +10,6 @@ from tiled.structures.array import ArrayStructure, BuiltinDtype, StructDtype
 from tiled.structures.bytes import BytesStructure
 from tiled.structures.core import StructureFamily
 from tiled.structures.data_source import Asset, DataSource, Management
-from tiled.utils import OneShotCachedMap, path_from_uri
 from ..utils import compile_template, list_summands
 
 
@@ -110,7 +106,12 @@ class ConsolidatorBase:
         self.data_key = stream_resource["data_key"]
         self.uri = stream_resource["uri"]
         self.assets: list[Asset] = [
-            Asset(data_uri=self.uri, is_directory=False, parameter=self.default_asset_role, num=0)
+            Asset(
+                data_uri=self.uri,
+                is_directory=False,
+                parameter=self.default_asset_role,
+                num=0,
+            )
         ]
         self._sres_parameters = stream_resource["parameters"]
         self._indx_offset = 0  # To reset file index for each new StreamResource
@@ -486,7 +487,6 @@ class BytesConsolidator:
 
         self.update_from_stream_resource(stream_resource)
 
-
     @classmethod
     def get_supported_mimetype(cls, sres):
         if (cls is not ConsolidatorBase) and (
@@ -525,7 +525,9 @@ class BytesConsolidator:
             )
             self.assets.append(new_asset)
 
-        return Patch(offset=(first_file_indx,), shape=(last_file_indx - first_file_indx,))
+        return Patch(
+            offset=(first_file_indx,), shape=(last_file_indx - first_file_indx,)
+        )
 
     def update_from_stream_resource(self, stream_resource: StreamResource):
         "Update the consolidator with a new StreamResource document"

@@ -732,8 +732,9 @@ class _RunWriter(DocumentRouter):
                     logger.warning(
                         f"Falling back to default dtype '{metadata['dtype_numpy']}'"
                     )
+
                 arr_client = desc_node.write_array(
-                    numpy.array(arr_lst, dtype=metadata.get("dtype_numpy", None)),
+                    array,
                     key=key,
                     metadata=metadata,
                     dims=("time", "dim_1"),  # Always 2D
