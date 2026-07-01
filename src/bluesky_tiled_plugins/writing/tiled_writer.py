@@ -53,7 +53,6 @@ from .consolidators import (
     ConsolidatorBase,
     DataSource,
     Patch,
-    StructureFamily,
     consolidator_factory,
 )
 from ..clients.catalog_of_bluesky_runs import CatalogOfBlueskyRuns
@@ -721,12 +720,18 @@ class _RunWriter(DocumentRouter):
             if not (arr_client := self._internal_arrays.get(f"{desc_name}/{key}")):
                 metadata = truncate_json_overflow(self.data_keys.get(key, {}))
                 try:
-                    array = numpy.array(arr_lst, dtype=metadata.get("dtype_numpy", None))
+                    array = numpy.array(
+                        arr_lst, dtype=metadata.get("dtype_numpy", None)
+                    )
                 except ValueError as e:
-                    logger.error(f"Error creating numpy array for key '{key}' in stream '{desc_name}': {e}.")
+                    logger.error(
+                        f"Error creating numpy array for key '{key}' in stream '{desc_name}': {e}."
+                    )
                     array = numpy.array(arr_lst)
                     metadata["dtype_numpy"] = str(array.dtype)
-                    logger.warning(f"Falling back to default dtype '{metadata['dtype_numpy']}'")
+                    logger.warning(
+                        f"Falling back to default dtype '{metadata['dtype_numpy']}'"
+                    )
                 arr_client = desc_node.write_array(
                     numpy.array(arr_lst, dtype=metadata.get("dtype_numpy", None)),
                     key=key,

@@ -1,15 +1,19 @@
 import collections
 import dataclasses
+import importlib
+import math
 import warnings
-from typing import Literal, cast
+from typing import Literal, cast, Optional
+from pathlib import Path
 
 import numpy as np
 from event_model.documents import EventDescriptor, StreamDatum, StreamResource
 from tiled.mimetypes import DEFAULT_ADAPTERS_BY_MIMETYPE
 from tiled.structures.array import ArrayStructure, BuiltinDtype, StructDtype
+from tiled.structures.bytes import BytesStructure
 from tiled.structures.core import StructureFamily
 from tiled.structures.data_source import Asset, DataSource, Management
-
+from tiled.utils import OneShotCachedMap, path_from_uri
 from ..utils import compile_template, list_summands
 
 
@@ -96,6 +100,7 @@ class ConsolidatorBase:
     """
 
     supported_mimetypes: set[str] = {"application/octet-stream"}
+    default_asset_role: str = "data_uris"  # Default parameter (role) for the asset(s)
     join_method: Literal["stack", "concat"] = "concat"
     join_chunks: bool = True
 
@@ -105,13 +110,15 @@ class ConsolidatorBase:
         self.data_key = stream_resource["data_key"]
         self.uri = stream_resource["uri"]
         self.assets: list[Asset] = [
-            Asset(data_uri=self.uri, is_directory=False, parameter="data_uris", num=0)
+            Asset(data_uri=self.uri, is_directory=False, parameter=self.default_asset_role, num=0)
         ]
         self._sres_parameters = stream_resource["parameters"]
         self._indx_offset = 0  # To reset file index for each new StreamResource
 
         # Any metadata to be set on the corresponding node in Tiled
         self.metadata: dict = {}
+        if spec := self._sres_parameters.get("spec"):
+            self.metadata["spec"] = spec
 
         # Find datum shape and machine dtype
         data_desc = descriptor["data_keys"][self.data_key]
@@ -463,6 +470,84 @@ class ConsolidatorBase:
         )
         adapter_class = (adapters_by_mimetype or {}).get(self.mimetype)
         return self.init_adapter(adapter_class=adapter_class)
+
+
+class BytesConsolidator:
+    supported_mimetypes: set[str] = {"application/octet-stream"}
+    default_asset_role: str = "data_uris"  # Default parameter (role) for the asset(s)
+
+    def __init__(self, stream_resource: StreamResource, descriptor: EventDescriptor):
+        self.mimetype: str = self.get_supported_mimetype(stream_resource)
+        self.metadata: dict = {}
+        self.template: Optional[str] = None
+        self.data_key: str = stream_resource["data_key"]
+        self.uri: str = stream_resource["uri"]
+        self.assets: list[Asset] = []
+
+        self.update_from_stream_resource(stream_resource)
+
+
+    @classmethod
+    def get_supported_mimetype(cls, sres):
+        if (cls is not ConsolidatorBase) and (
+            sres["mimetype"] not in cls.supported_mimetypes
+        ):
+            raise ValueError(
+                f"A data source of {sres['mimetype']} type can not be handled by {cls.__name__}."
+            )
+        return sres["mimetype"]
+
+    def get_datum_uri(self, indx: int):
+        """Return a full uri for a datum (an individual file) based on its index in the sequence.
+
+        This relies on the `template` parameter passed in the StreamResource, which is a string in the "new"
+        Python formatting style that can be evaluated to a file name using the `.format(indx)` method given an
+        integer index, e.g. "{:05d}.ext".
+
+        If template is not set, we assume that the uri is provided directly in the StreamResource document (i.e.
+        a single file case), and return it as is.
+        """
+
+        if self.template:
+            return self.uri + self.template.format(indx - self._indx_offset)
+        return self.uri
+
+    def consume_stream_datum(self, doc: StreamDatum):
+        """Determine the number and names of files from indices of datums"""
+        first_file_indx = doc["indices"]["start"]
+        last_file_indx = doc["indices"]["stop"]
+        for indx in range(first_file_indx, last_file_indx):
+            new_asset = Asset(
+                data_uri=self.get_datum_uri(indx),
+                is_directory=False,
+                parameter=self.default_asset_role,
+                num=len(self.assets),
+            )
+            self.assets.append(new_asset)
+
+        return Patch(offset=(first_file_indx,), shape=(last_file_indx - first_file_indx,))
+
+    def update_from_stream_resource(self, stream_resource: StreamResource):
+        "Update the consolidator with a new StreamResource document"
+
+        self._sres_parameters = stream_resource["parameters"]
+        if template := self._sres_parameters.get("template"):
+            filename = self._sres_parameters.get("filename", "")
+            self.template = compile_template(template, filename)
+
+        # Reset the file index counter to start from "0" for the new StreamResource template
+        self._indx_offset = len(self.assets)
+
+    def get_data_source(self) -> DataSource:
+        return DataSource(
+            mimetype=self.mimetype,
+            assets=self.assets,
+            structure_family=StructureFamily.bytes,
+            structure=BytesStructure(),
+            parameters={},
+            properties={},
+            management=Management.external,
+        )
 
 
 class CSVConsolidator(ConsolidatorBase):
