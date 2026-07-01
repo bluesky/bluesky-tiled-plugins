@@ -115,7 +115,7 @@ class ConsolidatorBase:
             )
         ]
         self._sres_parameters = stream_resource["parameters"]
-        self._indx_offset = 0  # To reset file index for each new StreamResource
+        self._indx_offset = 0  # To reset file index counter for each new StreamResource
 
         # Any metadata to be set on the corresponding node in Tiled
         self.metadata: dict = {}
@@ -497,8 +497,7 @@ class BytesConsolidator:
 
         self.update_from_stream_resource(stream_resource)
 
-        # Preserve the originating Bluesky spec (if any) as metadata for
-        # consistency with ConsolidatorBase.
+        # Preserve the originating Bluesky spec (if any) as metadata
         if spec := stream_resource["parameters"].get("spec"):
             self.metadata["spec"] = spec
 
@@ -550,7 +549,7 @@ class BytesConsolidator:
             filename = self._sres_parameters.get("filename", "")
             self.template = compile_template(template, filename)
 
-        # Reset the file index counter to start from "0" for the new StreamResource template
+        # Increment the offset to reset the file index counter to start from "0" for the new StreamResource template
         self._indx_offset = len(self.assets)
 
     def validate(self, fix_errors: bool = False) -> list[str]:
@@ -758,7 +757,7 @@ class MultipartRelatedConsolidator(ConsolidatorBase):
             self._sres_parameters["template"], self._sres_parameters.get("filename", "")
         )
         self._recompute_files_per_datum()
-        # Reset the file index counter to start from "0" for the new StreamResource template
+        # Increment the offset to reset the file index counter to start from "0" for the new StreamResource template
         self._indx_offset = len(self.assets)
 
 
