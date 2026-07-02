@@ -1,9 +1,11 @@
+import json
 import uuid
 
 import pytest
 from examples.render import render_templated_documents
 
 from bluesky_tiled_plugins import TiledWriter
+from bluesky_tiled_plugins.clients.bluesky_run import _iter_json_seq
 
 
 @pytest.fixture(scope="module", params=["internal_events", "external_assets"])
@@ -22,6 +24,33 @@ def run_client(client, external_assets_folder, request):
 def test_documents(run_client):
     assert len(list(run_client.v3.documents())) > 0
     assert len(list(run_client.v2.documents())) > 0
+
+
+@pytest.mark.parametrize(
+    "framing",
+    [
+        pytest.param(("\x1e", "\n"), id="rfc7464"),
+        pytest.param(("", "\n"), id="legacy-ndjson"),
+    ],
+)
+def test_iter_json_seq_accepts_both_framings(framing):
+    """The client parser must accept both RFC 7464 (\\x1E-prefixed) and
+    legacy NDJSON records so a new client can talk to an older server
+    during a rolling upgrade. Chunk boundaries are placed at arbitrary
+    byte offsets to exercise the incremental buffering.
+    """
+    prefix, terminator = framing
+    docs = [
+        ("start", {"uid": "u0", "time": 0.0}),
+        ("stop", {"uid": "u1", "run_start": "u0", "time": 1.0}),
+    ]
+    payload = "".join(
+        prefix + json.dumps({"name": name, "doc": doc}) + terminator
+        for name, doc in docs
+    ).encode()
+    chunks = [payload[i : i + 7] for i in range(0, len(payload), 7)]
+    parsed = list(_iter_json_seq(chunks))
+    assert [name for name, _ in parsed] == [name for name, _ in docs]
 
 
 def test_reversed_iteration(run_client):

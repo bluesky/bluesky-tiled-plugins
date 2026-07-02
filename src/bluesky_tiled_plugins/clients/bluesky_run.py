@@ -41,6 +41,31 @@ _document_types = {
 }
 
 
+def _iter_json_seq(byte_chunks):
+    """Yield (name, doc) parsed from a stream of bytes containing
+    document records in either RFC 7464 JSON-Seq framing (each record
+    prefixed with \\x1E and terminated by \\n) or legacy NDJSON framing
+    (records separated by \\n only). Accepting both keeps a newer client
+    interoperable with an older server during a rolling upgrade.
+    """
+    buffer = ""
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    for chunk in byte_chunks:
+        buffer += decoder.decode(chunk)
+        while "\n" in buffer:
+            line, buffer = buffer.split("\n", 1)
+            record = line.lstrip("\x1e").strip()
+            if not record:
+                continue
+            item = json.loads(record)
+            yield item["name"], _document_types[item["name"]](item["doc"])
+    buffer += decoder.decode(b"", final=True)
+    record = buffer.lstrip("\x1e").strip()
+    if record:
+        item = json.loads(record)
+        yield item["name"], _document_types[item["name"]](item["doc"])
+
+
 class BlueskyRun(Container):
     _ipython_display_ = None
     _repr_mimebundle_ = None
@@ -228,39 +253,11 @@ class BlueskyRunV2Mongo(BlueskyRunV2):
                     if response.is_error:
                         response.read()
                         handle_error(response)
-                    # RFC 7464 JSON-Seq: each record is preceded by
-                    # \x1E (record separator) and terminated by \n.
-                    buffer = ""
-                    decoder = codecs.getincrementaldecoder("utf-8")()
-                    for chunk in response.iter_bytes():
-                        buffer += decoder.decode(chunk)
-                        while True:
-                            rs = buffer.find("\x1e")
-                            if rs < 0:
-                                break
-                            nl = buffer.find("\n", rs)
-                            if nl < 0:
-                                break
-                            record = buffer[rs + 1 : nl].strip()
-                            buffer = buffer[nl + 1 :]
-                            if not record:
-                                continue
-                            item = json.loads(record)
-                            yield (
-                                item["name"],
-                                _document_types[item["name"]](item["doc"]),
-                            )
-                    buffer += decoder.decode(b"", final=True)
-                    # Handle a trailing record with no final newline.
-                    rs = buffer.find("\x1e")
-                    if rs >= 0:
-                        record = buffer[rs + 1 :].strip()
-                        if record:
-                            item = json.loads(record)
-                            yield (
-                                item["name"],
-                                _document_types[item["name"]](item["doc"]),
-                            )
+                    # Accept both RFC 7464 JSON-Seq (each record prefixed
+                    # with \x1E, terminated by \n) and legacy NDJSON
+                    # (records separated by \n only) so a new client can
+                    # talk to an older server during a rolling upgrade.
+                    yield from _iter_json_seq(response.iter_bytes())
 
 
 class _BlueskyRunSQL(BlueskyRun):
@@ -390,11 +387,7 @@ class _BlueskyRunSQL(BlueskyRun):
         with io.BytesIO() as buffer:
             self.export(buffer, format="application/json-seq")
             buffer.seek(0)
-            for line in buffer:
-                # RFC 7464 JSON-Seq records are prefixed with \x1E.
-                if stripped := line.decode().lstrip("\x1e").strip():
-                    parsed = json.loads(stripped)
-                    yield parsed["name"], _document_types[parsed["name"]](parsed["doc"])
+            yield from _iter_json_seq(buffer)
 
 
 class BlueskyRunV2SQL(BlueskyRunV2, _BlueskyRunSQL):
