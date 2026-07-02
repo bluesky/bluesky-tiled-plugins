@@ -121,7 +121,15 @@ class BlueskyRun(Container):
 
     @functools.cached_property
     def descriptors(self) -> list[dict[str, JSON_ITEM]]:
-        return [doc for name, doc in self.documents() if name == "descriptor"]
+        # Read descriptor documents from each stream's cached metadata
+        # rather than walking the full event stream, which would be
+        # catastrophic on runs with many events.
+        descriptors = []
+        for stream_name in self._stream_names:
+            stream = self[stream_name]
+            if hasattr(stream, "descriptors"):
+                descriptors.extend(stream.descriptors)
+        return descriptors
 
     def __getattr__(self, key):
         """

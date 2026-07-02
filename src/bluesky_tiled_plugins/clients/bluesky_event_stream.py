@@ -1,3 +1,4 @@
+import copy
 import functools
 import keyword
 import warnings
@@ -13,6 +14,34 @@ from ._common import IPYTHON_METHODS
 
 DATAVALUES = Sentinel("DATAVALUES")
 TIMESTAMPS = Sentinel("TIMESTAMPS")
+
+
+def _descriptors_from_metadata(metadata, stream_name):
+    """Reconstruct the sequence of Event descriptor documents for a stream
+    from the stream node's cached metadata (including any
+    ``_config_updates``). This avoids walking the full document stream
+    of the run just to filter for descriptor entries, which would be
+    catastrophic on runs with many events.
+    """
+    base = {k: v for k, v in metadata.items() if k != "_config_updates"}
+    base["name"] = stream_name
+    base.setdefault("object_keys", defaultdict(list))
+    for key, val in base.get("data_keys", {}).items():
+        if obj_name := val.get("object_name"):
+            base["object_keys"][obj_name].append(key)
+    descriptors = [base]
+    for upd in metadata.get("_config_updates", []):
+        desc = copy.deepcopy(descriptors[-1])
+        desc["uid"] = upd.get("uid", desc.get("uid"))
+        desc["time"] = upd.get("time", desc.get("time"))
+        for obj_name, obj in upd.get("configuration", {}).items():
+            for key in obj.get("data", {}):
+                desc["configuration"][obj_name]["data"][key] = obj["data"][key]
+                desc["configuration"][obj_name]["timestamps"][key] = obj[
+                    "timestamps"
+                ][key]
+        descriptors.append(desc)
+    return descriptors
 
 
 class BlueskyEventStream(Container):
@@ -155,9 +184,9 @@ class BlueskyEventStreamV2SQL(OneShotCachedMap):
 
                     # Add values and timestamps from config_updates
                     for upd in updates:
-                        if upd_config := upd.get("configuration", {}):
-                            _vs.append(upd_config.get("data", {}).get(key))
-                            _ts.append(upd_config.get("timestamps", {}).get(key))
+                        upd_obj = upd.get("configuration", {}).get(obj_name, {})
+                        _vs.append(upd_obj.get("data", {}).get(key))
+                        _ts.append(upd_obj.get("timestamps", {}).get(key))
 
                     cf_vals[obj_name][key] = VirtualArrayClient(_vs)
                     cf_time[obj_name][key] = VirtualArrayClient(_ts)
@@ -185,20 +214,8 @@ class BlueskyEventStreamV2SQL(OneShotCachedMap):
 
     @functools.cached_property
     def descriptors(self):
-        # Go back to the BlueskyRun node and request the documents
-        # the path is: bs_run_node/streams/current_stream (old) or bs_run_node/current_stream (new)
-        bs_run_node = self["data"].parent
-        if bs_run_node.item["id"] == "streams" and (
-            "BlueskyRun" not in {s.name for s in bs_run_node.specs}
-        ):
-            # The parent is the old "streams" node, go up one more level
-            bs_run_node = bs_run_node.parent
         stream_name = self.metadata.get("stream_name") or self["data"].item["id"]
-        return [
-            doc
-            for name, doc in bs_run_node.documents()
-            if name == "descriptor" and doc["name"] == stream_name
-        ]
+        return _descriptors_from_metadata(dict(self.metadata), stream_name)
 
     @property
     def _descriptors(self):
@@ -377,17 +394,5 @@ class BlueskyEventStreamV3(BlueskyEventStream, CompositeClient):
 
     @functools.cached_property
     def descriptors(self):
-        # Go back to the BlueskyRun node and requests the documents
         stream_name = self.metadata.get("stream_name") or self.item["id"]
-        # the path is: bs_run_node/streams/current_stream (old) or bs_run_node/current_stream (new)
-        bs_run_node = self.parent
-        if bs_run_node.item["id"] == "streams" and (
-            "BlueskyRun" not in {s.name for s in bs_run_node.specs}
-        ):
-            # The parent is the old "streams" node, go up one more level
-            bs_run_node = bs_run_node.parent
-        return [
-            doc
-            for name, doc in bs_run_node.documents()
-            if name == "descriptor" and doc["name"] == stream_name
-        ]
+        return _descriptors_from_metadata(dict(self.metadata), stream_name)
