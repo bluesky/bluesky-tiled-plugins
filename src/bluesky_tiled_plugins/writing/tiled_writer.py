@@ -359,6 +359,7 @@ class RunNormalizer(DocumentRouter):
         # previous frame index.
         # In case when the index needs to RESET for each Resource, the `indices` dictionary should be
         # included in the datum_kwargs directly.
+        sres_uid = datum_doc["resource"]
         datum_kwargs = datum_doc.get("datum_kwargs", {})
         frame = datum_kwargs.pop("frame", None)
         if indices := datum_kwargs.pop("indices", None):
@@ -381,11 +382,12 @@ class RunNormalizer(DocumentRouter):
         seq_nums = StreamRange(start=index_start + 1, stop=index_stop + 1)
 
         # produce the Resource document, if needed (add data_key to match the StreamResource schema)
-        # Emit a copy of the StreamResource document with a new uid; this allows to account for cases
-        # where one Resource is used by several data streams with different data_keys and datum_kwargs.
+        # Emit a copy of the StreamResource document with a new uid scoped by
+        # (resource, descriptor, data_key) so multiple descriptors that reference the same Resource
+        # each get their own StreamResource and land on their own node in Tiled. Otherwise every
+        # descriptor's StreamDatum would attach to whichever descriptor's node was created first.
         sres_doc = None
-        sres_uid = datum_doc["resource"]
-        new_sres_uid = sres_uid + "-" + data_key
+        new_sres_uid = f"{sres_uid}-{desc_uid}-{data_key}"
         if (sres_uid in self._sres_cache) and (new_sres_uid not in self._emitted):
             sres_doc = copy.deepcopy(self._sres_cache[sres_uid])
             sres_doc["data_key"] = data_key

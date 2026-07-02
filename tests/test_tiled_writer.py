@@ -623,6 +623,61 @@ def test_legacy_with_multiplier_parameter(
         assert not arr.data_sources()[0].properties
 
 
+def test_shared_resource_multi_stream(client, external_assets_folder):
+    """Two descriptors share one Resource; each must land on its own Tiled node.
+
+    Mirrors the real-world case of an area detector triggered per stream,
+    writing successive frames as a TIFF stack shared by all streams. Both
+    descriptors use the same `data_key`; each Datum picks a specific file
+    in the stack via a spec-specific `point_number` kwarg. Stream shapes
+    differ (one image vs. two) to exercise per-stream frame counts.
+
+    `point_number` is not a concept the writer understands; the caller
+    normalizes it to the standard `indices` field via a `patches["datum"]`
+    hook. With the fix, the writer emits a distinct StreamResource per
+    (resource, descriptor, data_key), so each stream gets its own node
+    instead of colliding onto the first descriptor's node.
+    """
+
+    def patch_datum(doc):
+        kwargs = doc.get("datum_kwargs", {})
+
+        # Override indices with the point_number if present:
+        # Necessary to correctly apply the filename template to tiff files
+        # when a single Resource is referenced by multiple descriptors.
+        point_number = kwargs.pop("point_number", None)
+        if point_number is not None:
+            kwargs["indices"] = {"start": point_number, "stop": point_number + 1}
+        return doc
+
+    tw = TiledWriter(client, patches={"datum": patch_datum})
+
+    for item in render_templated_documents(
+        "external_assets_shared_resource.json", external_assets_folder
+    ):
+        name, doc = item["name"], item["doc"]
+        if name == "start":
+            uid = doc["uid"]
+        tw(name, doc)
+
+    # Stream `s0` holds a single frame (point 0); stream `s1` holds two
+    # frames (points 1 and 2) from the same TIFF stack.
+    expected_frames = {"s0": [0], "s1": [1, 2]}
+    for stream_name, points in expected_frames.items():
+        arr = client[uid][f"{stream_name}/det_image"]
+        assert arr.shape == (len(points), 1, 10, 15), (
+            f"{stream_name}: expected shape ({len(points)}, 1, 10, 15), got {arr.shape}"
+        )
+        data = np.asarray(arr.read())
+        for row, point_number in enumerate(points):
+            expected = tf.imread(
+                os.path.join(
+                    external_assets_folder, "tiff_files", f"img_{point_number:05}.tif"
+                )
+            )
+            np.testing.assert_array_equal(data[row], expected)
+
+
 def test_streams_with_no_events(client, external_assets_folder):
     tw = TiledWriter(client)
 
