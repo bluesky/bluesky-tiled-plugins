@@ -1,10 +1,7 @@
 import collections
 import dataclasses
-import os
 import warnings
-from functools import cached_property
 from typing import Literal, cast
-from urllib.parse import unquote, urlparse
 
 import numpy as np
 from event_model.documents import EventDescriptor, StreamDatum, StreamResource
@@ -576,56 +573,23 @@ class MultipartRelatedConsolidator(ConsolidatorBase):
         Python formatting style that can be evaluated to a file name using the `.format(indx)` method given an
         integer index, e.g. "{:05d}.ext".
 
-        If template is not set, we assume that the uri is provided directly in the StreamResource document (i.e.
-        a single file case), and return it as is.
+        The URI and the rendered template are concatenated verbatim, so the caller controls whether a `/` separator
+        is present. Both conventions in the wild are supported: templates that render a bare filename appended
+        to a filename-prefix URI (e.g. `.../uid` + `_{:d}.tif`) and templates that carry their own leading `/`
+        appended to a directory URI (e.g. `.../dir` + `/{filename}.tif`).
+        A single degenerate `//` at the junction (both sides carrying a slash) is collapsed to `/`.
+
+        If template is not set, we assume that the uri is provided directly in the StreamResource document
+        (i.e. a single file case), and return it as is.
         """
 
         if not self.template:
             return self.uri
+
         tail = self.template.format(indx - self._indx_offset)
-        return self._compose_datum_uri(tail)
-
-    def _compose_datum_uri(self, tail: str) -> str:
-        """Join `self.uri` with a rendered filename fragment producing a valid file URI.
-
-        Two conventions are accepted and normalized transparently:
-
-        - The URI names the directory that contains the data files, and the
-          template renders a filename to place inside it. This is the common
-          case; the join uses exactly one `/` regardless of a trailing `/`
-          on the URI or a leading `/` on the template.
-        - The URI ends with a per-file prefix (e.g. `.../topcam/51ea13ff`)
-          and the template renders the numeric suffix. In that case the two
-          pieces are concatenated directly without inserting a `/`.
-
-        For `file://` URIs the local filesystem is probed once to select the
-        joining strategy; for other schemes the safe default (a single `/`)
-        is used.
-        """
-        if self._uri_join_strategy == "concat":
-            # Strip a leading `/` on the template to defensively handle the
-            # legacy workaround where templates were forced to start with `/`.
-            return self.uri + tail.lstrip("/")
-        return self.uri.rstrip("/") + "/" + tail.lstrip("/")
-
-    @cached_property
-    def _uri_join_strategy(self) -> Literal["slash", "concat"]:
-        """Decide how to join `self.uri` with a rendered template fragment.
-
-        Returns "concat" only when the URI is a local `file://` path whose
-        final segment is not itself a directory but whose parent directory
-        exists -- i.e. the path unambiguously encodes a filename prefix.
-        Returns "slash" otherwise (the common case, and the safe default
-        when the filesystem can not be probed).
-        """
-        parsed = urlparse(self.uri)
-        if parsed.scheme == "file":
-            path = unquote(parsed.path)
-            if not os.path.isdir(path):
-                parent = os.path.dirname(path.rstrip("/"))
-                if os.path.basename(path.rstrip("/")) and os.path.isdir(parent):
-                    return "concat"
-        return "slash"
+        if self.uri.endswith("/") and tail.startswith("/"):
+            tail = tail.lstrip("/")
+        return self.uri + tail
 
     def consume_stream_datum(self, doc: StreamDatum):
         """Determine the number and names of files from indices of datums and the number of files per datum.
