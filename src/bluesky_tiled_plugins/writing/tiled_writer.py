@@ -4,7 +4,7 @@ import logging
 from collections import defaultdict, deque, namedtuple
 from collections.abc import Callable
 from dataclasses import asdict
-from pathlib import Path
+import posixpath
 import re
 from typing import Any, Optional, cast
 import warnings
@@ -42,7 +42,7 @@ from tiled.client.container import Container
 from tiled.client.dataframe import DataFrameClient
 from tiled.client.utils import handle_error, retry_context
 from tiled.structures.core import Spec
-from tiled.utils import safe_json_dump
+from tiled.utils import ensure_uri, safe_json_dump
 from packaging.version import Version
 
 from ..utils import truncate_json_overflow
@@ -282,12 +282,17 @@ class RunNormalizer(DocumentRouter):
             resource_spec = resource_dict.pop("spec")
             stream_resource_doc["mimetype"] = self.spec_to_mimetype[resource_spec]
             stream_resource_doc["parameters"] = resource_dict.pop("resource_kwargs", {})
-            file_path = Path(resource_dict.pop("root").strip("/")).joinpath(
-                resource_dict.pop("resource_path").strip("/")
-            )
-            stream_resource_doc["uri"] = "file://localhost/" + str(file_path).lstrip(
-                "/"
-            )
+
+            # Compose `root` and `resource_path` into a single path, then canonicalize as a URI.
+            # A trailing `/` on `resource_path` is meaningful -- it signals the directory-URI convention
+            # that the template will later append a filename to -- but `Path.absolute()` inside
+            # `ensure_uri` normalizes it away, so we preserve and reattach it explicitly.
+            resource_path = resource_dict.pop("resource_path", "")
+            if root := resource_dict.pop("root", None):
+                head = "/" if resource_path.startswith("/") else ""
+                resource_path = posixpath.join(root + head, resource_path.lstrip("/"))
+            tail = "/" if resource_path.endswith("/") else ""
+            stream_resource_doc["uri"] = ensure_uri(resource_path).rstrip("/") + tail
 
             # Add the internal path within HDF5 files to the parameters for known Bluesky specs
             existing_dataset = stream_resource_doc["parameters"].get("dataset")

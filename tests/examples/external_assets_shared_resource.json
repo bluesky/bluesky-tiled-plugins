@@ -20,7 +20,7 @@
         "join_method": "stack"
       },
       "root": "{{ root_path }}",
-      "resource_path": "/tiff_files",
+      "resource_path": "/tiff_files/",
       "spec": "AD_TIFF",
       "uid": "tiff-stack-resource"
     }
