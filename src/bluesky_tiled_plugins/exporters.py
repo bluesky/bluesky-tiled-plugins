@@ -1,8 +1,8 @@
-import copy
 import json
 import os
 import re
-from collections import defaultdict
+
+from ._descriptors import build_descriptor_docs
 
 
 def _synthesize_multipart_template(uris):
@@ -86,32 +86,18 @@ async def json_seq_exporter(mimetype, adapter, metadata, filter_for_access):
             await desc_node.keys_range(offset=0, limit=None)
         )  # Composite parts
 
-        # First (or the only) descriptor
-        desc_doc = {k: v for k, v in desc_meta.items() if k not in {"_config_updates"}}
-        desc_doc["run_start"] = metadata.get("start", {}).get("uid")
-        desc_doc["name"] = desc_name
-        desc_doc["object_keys"] = defaultdict(list)
-        for key, val in desc_doc["data_keys"].items():
-            if obj_name := val.get("object_name"):
-                desc_doc["object_keys"][obj_name].append(key)
-
-        result.append({"name": "descriptor", "doc": desc_doc})
-
-        # Process subsequent descriptors, if any
-        desc_time_uids = [{"uid": desc_doc["uid"], "time": desc_doc["time"]}]
-        for upd in desc_meta.get("_config_updates", []):
-            desc_doc = copy.deepcopy(desc_doc)
-            desc_doc["uid"] = upd["uid"]
-            desc_doc["time"] = upd["time"]
-            desc_time_uids.extend([{"uid": desc_doc["uid"], "time": desc_doc["time"]}])
-            for obj_name, obj in upd.get("configuration", {}).items():
-                # This assumes that that the full configuration was present in the first descriptor
-                for key in obj["data"].keys():
-                    desc_doc["configuration"][obj_name]["data"][key] = obj["data"][key]
-                    desc_doc["configuration"][obj_name]["timestamps"][key] = obj[
-                        "timestamps"
-                    ][key]
-
+        # Reconstruct the descriptor sequence through the shared helper
+        # so the client `descriptors` properties and the exporter emit
+        # byte-identical, schema-validated documents.
+        descriptor_docs = build_descriptor_docs(
+            dict(desc_meta),
+            stream_name=desc_name,
+            run_start_uid=metadata.get("start", {}).get("uid"),
+        )
+        desc_time_uids = [
+            {"uid": d["uid"], "time": d["time"]} for d in descriptor_docs
+        ]
+        for desc_doc in descriptor_docs:
             result.append({"name": "descriptor", "doc": desc_doc})
 
         # Generate events

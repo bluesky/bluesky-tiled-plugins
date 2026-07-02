@@ -1,4 +1,3 @@
-import copy
 import functools
 import keyword
 import warnings
@@ -10,38 +9,11 @@ from tiled.client.composite import CompositeClient
 from tiled.client.container import DEFAULT_STRUCTURE_CLIENT_DISPATCH, Container
 from tiled.utils import DictView, OneShotCachedMap, Sentinel, node_repr
 
+from .._descriptors import build_descriptor_docs
 from ._common import IPYTHON_METHODS
 
 DATAVALUES = Sentinel("DATAVALUES")
 TIMESTAMPS = Sentinel("TIMESTAMPS")
-
-
-def _descriptors_from_metadata(metadata, stream_name):
-    """Reconstruct the sequence of Event descriptor documents for a stream
-    from the stream node's cached metadata (including any
-    ``_config_updates``). This avoids walking the full document stream
-    of the run just to filter for descriptor entries, which would be
-    catastrophic on runs with many events.
-    """
-    base = {k: v for k, v in metadata.items() if k != "_config_updates"}
-    base["name"] = stream_name
-    base.setdefault("object_keys", defaultdict(list))
-    for key, val in base.get("data_keys", {}).items():
-        if obj_name := val.get("object_name"):
-            base["object_keys"][obj_name].append(key)
-    descriptors = [base]
-    for upd in metadata.get("_config_updates", []):
-        desc = copy.deepcopy(descriptors[-1])
-        desc["uid"] = upd.get("uid", desc.get("uid"))
-        desc["time"] = upd.get("time", desc.get("time"))
-        for obj_name, obj in upd.get("configuration", {}).items():
-            for key in obj.get("data", {}):
-                desc["configuration"][obj_name]["data"][key] = obj["data"][key]
-                desc["configuration"][obj_name]["timestamps"][key] = obj[
-                    "timestamps"
-                ][key]
-        descriptors.append(desc)
-    return descriptors
 
 
 class BlueskyEventStream(Container):
@@ -215,7 +187,17 @@ class BlueskyEventStreamV2SQL(OneShotCachedMap):
     @functools.cached_property
     def descriptors(self):
         stream_name = self.metadata.get("stream_name") or self["data"].item["id"]
-        return _descriptors_from_metadata(dict(self.metadata), stream_name)
+        # Reach up to the BlueskyRun node to pull the run_start uid; the
+        # stream metadata itself does not carry it.
+        bs_run_node = self["data"].parent
+        if bs_run_node.item["id"] == "streams" and (
+            "BlueskyRun" not in {s.name for s in bs_run_node.specs}
+        ):
+            bs_run_node = bs_run_node.parent
+        run_start_uid = bs_run_node.metadata.get("start", {}).get("uid")
+        return build_descriptor_docs(
+            dict(self.metadata), stream_name, run_start_uid=run_start_uid
+        )
 
     @property
     def _descriptors(self):
@@ -395,4 +377,12 @@ class BlueskyEventStreamV3(BlueskyEventStream, CompositeClient):
     @functools.cached_property
     def descriptors(self):
         stream_name = self.metadata.get("stream_name") or self.item["id"]
-        return _descriptors_from_metadata(dict(self.metadata), stream_name)
+        bs_run_node = self.parent
+        if bs_run_node.item["id"] == "streams" and (
+            "BlueskyRun" not in {s.name for s in bs_run_node.specs}
+        ):
+            bs_run_node = bs_run_node.parent
+        run_start_uid = bs_run_node.metadata.get("start", {}).get("uid")
+        return build_descriptor_docs(
+            dict(self.metadata), stream_name, run_start_uid=run_start_uid
+        )
