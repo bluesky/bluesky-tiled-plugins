@@ -65,9 +65,9 @@ def build_descriptor_docs(raw_metadata, stream_name, run_start_uid=None):
         for obj_name, obj in upd.get("configuration", {}).items():
             for key in obj.get("data", {}):
                 desc["configuration"][obj_name]["data"][key] = obj["data"][key]
-                desc["configuration"][obj_name]["timestamps"][key] = obj[
-                    "timestamps"
-                ][key]
+                desc["configuration"][obj_name]["timestamps"][key] = obj["timestamps"][
+                    key
+                ]
         descriptors.append(desc)
 
     for desc in descriptors:

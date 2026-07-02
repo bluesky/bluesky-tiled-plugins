@@ -94,9 +94,7 @@ async def json_seq_exporter(mimetype, adapter, metadata, filter_for_access):
             stream_name=desc_name,
             run_start_uid=metadata.get("start", {}).get("uid"),
         )
-        desc_time_uids = [
-            {"uid": d["uid"], "time": d["time"]} for d in descriptor_docs
-        ]
+        desc_time_uids = [{"uid": d["uid"], "time": d["time"]} for d in descriptor_docs]
         for desc_doc in descriptor_docs:
             result.append({"name": "descriptor", "doc": desc_doc})
 
