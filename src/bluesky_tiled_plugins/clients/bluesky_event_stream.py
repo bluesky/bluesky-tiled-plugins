@@ -9,7 +9,7 @@ from tiled.client.composite import CompositeClient
 from tiled.client.container import DEFAULT_STRUCTURE_CLIENT_DISPATCH, Container
 from tiled.utils import DictView, OneShotCachedMap, Sentinel, node_repr
 
-from .._descriptors import build_descriptor_docs
+from ..exporters import build_descriptor_docs
 from ._common import IPYTHON_METHODS
 
 DATAVALUES = Sentinel("DATAVALUES")
