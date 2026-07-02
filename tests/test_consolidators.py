@@ -596,3 +596,66 @@ def test_combine_patches(patches, expected_shape, expected_offset):
     combined = Patch.combine_patches(patches)
     assert combined.shape == expected_shape
     assert combined.offset == expected_offset
+
+
+# Tuples of (uri_suffix, template, expected_tail).
+# `uri_suffix` is appended to a tmp_path-rooted directory; the URI is
+# `file://localhost/{tmp_path}{uri_suffix}`. `expected_tail` is what
+# `get_datum_uri(0)` should produce beyond `file://localhost/{tmp_path}`.
+uri_join_testdata = [
+    # Standard: URI is a directory, template renders a plain filename.
+    ("/topcam", "img_{:06d}.jpg", "/topcam/img_000000.jpg"),
+    # Standard: URI is a directory, template carries a legacy leading `/`.
+    ("/topcam", "/img_{:06d}.jpg", "/topcam/img_000000.jpg"),
+    # Standard: URI ends with a trailing slash.
+    ("/topcam/", "img_{:06d}.jpg", "/topcam/img_000000.jpg"),
+    # Standard: URI ends with a trailing slash and template has a leading `/`.
+    ("/topcam/", "/img_{:06d}.jpg", "/topcam/img_000000.jpg"),
+    # Embedded prefix: URI ends with a filename stem inside an existing dir.
+    ("/topcam/51ea13ff", "_{:06d}.jpg", "/topcam/51ea13ff_000000.jpg"),
+    # Embedded prefix, defensive: template carries a stray leading `/`.
+    ("/topcam/51ea13ff", "/_{:06d}.jpg", "/topcam/51ea13ff_000000.jpg"),
+]
+
+
+@pytest.mark.parametrize(
+    "uri_suffix, template, expected_tail",
+    uri_join_testdata,
+)
+def test_get_datum_uri_join(
+    tmp_path,
+    descriptor,
+    image_seq_stream_resource_factory,
+    uri_suffix,
+    template,
+    expected_tail,
+):
+    """`get_datum_uri` produces a valid file URI regardless of trailing/leading `/`.
+
+    The join strategy is inferred from the filesystem: when the URI
+    resolves to a directory, exactly one `/` is inserted; when the URI
+    ends with a filename prefix inside an existing directory, the two
+    pieces are concatenated directly.
+    """
+    (tmp_path / "topcam").mkdir()
+    base = f"file://localhost{tmp_path}"
+    stream_resource = image_seq_stream_resource_factory(
+        image_format="jpeg", data_key="test_img", chunk_shape=(1,)
+    )
+    stream_resource["uri"] = base + uri_suffix
+    stream_resource["parameters"]["template"] = template
+    cons = consolidator_factory(stream_resource, descriptor)
+    assert cons.get_datum_uri(0) == base + expected_tail
+
+
+def test_get_datum_uri_defaults_to_slash_for_missing_path(
+    descriptor, image_seq_stream_resource_factory
+):
+    """Nonexistent paths and non-`file://` URIs fall back to slash-join."""
+    stream_resource = image_seq_stream_resource_factory(
+        image_format="jpeg", data_key="test_img", chunk_shape=(1,)
+    )
+    stream_resource["uri"] = "https://example.invalid/data/topcam"
+    stream_resource["parameters"]["template"] = "img_{:06d}.jpg"
+    cons = consolidator_factory(stream_resource, descriptor)
+    assert cons.get_datum_uri(0) == "https://example.invalid/data/topcam/img_000000.jpg"
