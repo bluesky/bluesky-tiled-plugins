@@ -167,6 +167,10 @@ async def json_seq_exporter(mimetype, adapter, metadata, filter_for_access):
             result.append({"name": "descriptor", "doc": desc_doc})
 
         # Generate events
+        # 1. Internal tabular data
+        row_data = {}  # seq_num -> {key: value}
+        row_ts = {}  # seq_num -> {key: timestamp}
+        row_time = {}  # seq_num -> row time
         if "internal" in part_names:
             internal_node = await desc_node.lookup_adapter(["internal"])
             df = await internal_node.read()
@@ -176,33 +180,61 @@ async def json_seq_exporter(mimetype, adapter, metadata, filter_for_access):
                 if k not in {"seq_num", "time"} and not k.startswith("ts_")
             ]
             for row in df.to_dict(orient="records"):
-                desc_uid = desc_time_uids[0][
-                    "uid"
-                ]  # same as desc_node.metadata()["uid"] if no updates
-                for _desc_uid_time in desc_time_uids[1:]:
-                    if _desc_uid_time["time"] <= row["time"]:
-                        desc_uid = _desc_uid_time["uid"]
-                event_doc = {"seq_num": row["seq_num"], "time": row["time"]}
-                event_doc["uid"] = (
-                    f"event-{desc_uid}-{row['seq_num']}"  # can be anything (unique)
-                )
-                event_doc["descriptor"] = desc_uid
-                event_doc["data"] = {
-                    k: row[k].tolist() if hasattr(row[k], "__array__") else row[k]
-                    for k in keys
-                }
-                event_doc["timestamps"] = {k: row[f"ts_{k}"] for k in keys}
-                result.append({"name": "event", "doc": event_doc})
+                sn = row["seq_num"]
+                row_time[sn] = row["time"]
+                data = row_data.setdefault(sn, {})
+                ts = row_ts.setdefault(sn, {})
+                for k in keys:
+                    data[k] = (
+                        row[k].tolist() if hasattr(row[k], "__array__") else row[k]
+                    )
+                    ts[k] = row[f"ts_{k}"]
+
+        # 2. Ragged internal arrays live in their own child nodes with
+        # `structure_family == "ragged"`. Merge them into the event
+        # sequence so re-ingest routes them back through `write_ragged`.
+        ragged_keys = set()
+        for part_name in part_names.difference(("internal",)):
+            part_node = await desc_node.lookup_adapter([part_name])
+            if getattr(part_node, "structure_family", None) != "ragged":
+                continue
+            ragged_keys.add(part_name)
+            ragged_array = await part_node.read()
+            values = ragged_array.tolist()
+            # Assume ragged rows are ordered by seq_num; if the internal
+            # table is present, seq_nums start at 1 and are contiguous.
+            seq_nums = (
+                sorted(row_data.keys()) if row_data else list(range(1, len(values) + 1))
+            )
+            for sn, val in zip(seq_nums, values):
+                row_data.setdefault(sn, {})[part_name] = val
+                row_ts.setdefault(sn, {})[part_name] = row_time.get(sn, 0.0)
+
+        for sn in sorted(row_data.keys()):
+            desc_uid = desc_time_uids[0]["uid"]
+            row_t = row_time.get(sn, 0.0)
+            for _desc_uid_time in desc_time_uids[1:]:
+                if _desc_uid_time["time"] <= row_t:
+                    desc_uid = _desc_uid_time["uid"]
+            event_doc = {
+                "seq_num": sn,
+                "time": row_t,
+                "uid": f"event-{desc_uid}-{sn}",
+                "descriptor": desc_uid,
+                "data": row_data[sn],
+                "timestamps": row_ts[sn],
+            }
+            result.append({"name": "event", "doc": event_doc})
 
         # Generate Stream Resources and Datums
         desc_uid = desc_node.metadata()["uid"]
-        for data_key in part_names.difference(("internal",)):
+        for data_key in part_names.difference(("internal",)).difference(ragged_keys):
             # Loop over data_keys for external data only
             sres_uid = f"sr-{desc_uid}-{data_key}"  # can be anything (unique)
             ds = (await desc_node.lookup_adapter([data_key])).data_sources[0]
             asset_uris = [
                 a.data_uri
-                for a in sorted(ds.assets, key=lambda a: (a.num or 0))
+                for a in sorted(ds.assets, key=lambda a: a.num or 0)
                 if a.parameter in {"data_uris", "data_uri"}
             ]
             parameters = dict(ds.parameters)
