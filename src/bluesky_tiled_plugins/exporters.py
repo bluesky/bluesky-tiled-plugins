@@ -67,7 +67,7 @@ async def json_seq_exporter(mimetype, adapter, metadata, filter_for_access):
         raise ValueError("This exporter only works with BlueskyRun v3.x")
 
     adapter = await filter_for_access(adapter)
-    yield json.dumps({"name": "start", "doc": metadata.get("start", {})})
+    start_doc = {"name": "start", "doc": metadata.get("start", {})}
     result = []
 
     # Generate descriptors
@@ -237,7 +237,10 @@ async def json_seq_exporter(mimetype, adapter, metadata, filter_for_access):
     #             for x in batch_documents([(y["name"], y["doc"]) for y in result], size=1000)
     #         ]
 
-    for doc in result:
-        yield "\n" + json.dumps(doc)
+    result.append({"name": "stop", "doc": metadata.get("stop", {})})
 
-    yield "\n" + json.dumps({"name": "stop", "doc": metadata.get("stop", {})})
+    # RFC 7464: each record is preceded by the ASCII record-separator
+    # character (\x1E) and terminated by a newline.
+    yield "\x1e" + json.dumps(start_doc) + "\n"
+    for doc in result:
+        yield "\x1e" + json.dumps(doc) + "\n"

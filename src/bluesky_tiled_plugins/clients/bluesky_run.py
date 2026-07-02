@@ -228,23 +228,39 @@ class BlueskyRunV2Mongo(BlueskyRunV2):
                     if response.is_error:
                         response.read()
                         handle_error(response)
-                    tail = ""
+                    # RFC 7464 JSON-Seq: each record is preceded by
+                    # \x1E (record separator) and terminated by \n.
+                    buffer = ""
                     decoder = codecs.getincrementaldecoder("utf-8")()
                     for chunk in response.iter_bytes():
-                        for line in decoder.decode(chunk).splitlines(keepends=True):
-                            if line[-1] == "\n":
-                                item = json.loads(tail + line)
-                                yield (
-                                    item["name"],
-                                    _document_types[item["name"]](item["doc"]),
-                                )
-                                tail = ""
-                            else:
-                                tail += line
-                    tail += decoder.decode(b"", final=True)
-                    if tail:
-                        item = json.loads(tail)
-                        yield (item["name"], _document_types[item["name"]](item["doc"]))
+                        buffer += decoder.decode(chunk)
+                        while True:
+                            rs = buffer.find("\x1e")
+                            if rs < 0:
+                                break
+                            nl = buffer.find("\n", rs)
+                            if nl < 0:
+                                break
+                            record = buffer[rs + 1 : nl].strip()
+                            buffer = buffer[nl + 1 :]
+                            if not record:
+                                continue
+                            item = json.loads(record)
+                            yield (
+                                item["name"],
+                                _document_types[item["name"]](item["doc"]),
+                            )
+                    buffer += decoder.decode(b"", final=True)
+                    # Handle a trailing record with no final newline.
+                    rs = buffer.find("\x1e")
+                    if rs >= 0:
+                        record = buffer[rs + 1 :].strip()
+                        if record:
+                            item = json.loads(record)
+                            yield (
+                                item["name"],
+                                _document_types[item["name"]](item["doc"]),
+                            )
 
 
 class _BlueskyRunSQL(BlueskyRun):
@@ -375,7 +391,8 @@ class _BlueskyRunSQL(BlueskyRun):
             self.export(buffer, format="application/json-seq")
             buffer.seek(0)
             for line in buffer:
-                if stripped := line.decode().strip():
+                # RFC 7464 JSON-Seq records are prefixed with \x1E.
+                if stripped := line.decode().lstrip("\x1e").strip():
                     parsed = json.loads(stripped)
                     yield parsed["name"], _document_types[parsed["name"]](parsed["doc"])
 
