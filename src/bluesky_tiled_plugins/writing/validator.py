@@ -287,7 +287,7 @@ def validate_data_source(
             ast.size = size_from_uri(ast.data_uri)
         except (FileNotFoundError, OSError, ValueError) as e:
             raise AssetValidationException(
-                f"Could not determine size of asset {ast.data_uri}: {e}"
+                f"Could not determine size of asset {ast.data_uri}: {type(e).__name__}: {e}"
             ) from e
 
     # If this is a data source with BytesStructure, we cannot validate it further

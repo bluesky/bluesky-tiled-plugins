@@ -573,7 +573,7 @@ class BytesConsolidator:
                 size_from_uri(ast.data_uri)
             except (FileNotFoundError, OSError, ValueError) as e:
                 raise AssetValidationException(
-                    f"Could not determine size of asset {ast.data_uri}: {e}"
+                    f"Could not determine size of asset {ast.data_uri}: {type(e).__name__}: {e}"
                 ) from e
         return []
 
