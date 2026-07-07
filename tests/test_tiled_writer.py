@@ -794,7 +794,24 @@ def test_json_backup(client, tmpdir, monkeypatch):
 
 @pytest.mark.parametrize(
     "max_array_size, expected_scheme",
-    [(0, "file"), (4, "file"), (16, "duckdb"), (-1, "duckdb")],
+    [
+        pytest.param(
+            0,
+            "file",
+            marks=pytest.mark.xfail(
+                reason=(
+                    "internal_events.json has a data_key with a zero-length dimension; "
+                    "most zarr versions reject chunk edges of 0. Passes on zarr <3.2 "
+                    "and >=3.1; fails on zarr 2.x and zarr >=3.2."
+                ),
+                raises=(ZeroDivisionError, ValueError),
+                strict=False,
+            ),
+        ),
+        (4, "file"),
+        (16, "duckdb"),
+        (-1, "duckdb"),
+    ],
 )
 def test_internal_arrays_written_as_zarr(client, max_array_size, expected_scheme):
     tw = TiledWriter(client, max_array_size=max_array_size)
