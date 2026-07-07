@@ -5,7 +5,11 @@ from tiled.server.dependencies import get_entry, get_root_tree
 from tiled.server.authentication import check_scopes
 from fastapi import HTTPException
 import pydantic
-from ..writing.validator import validate_data_source, StructureValidationException
+from ..writing.validator import (
+    validate_data_source,
+    StructureValidationException,
+    AssetValidationException,
+)
 
 from typing import Optional
 from fastapi import Request, Depends, Query, Security
@@ -86,12 +90,21 @@ async def validate_entry_structure(
                             ]
                         )
 
+                    except AssetValidationException as e:
+                        msg = f"Asset validation of '{stream_name}/{dkey_name}' failed: {e}"
+                        if any(re.search(ptrn, str(e)) for ptrn in ignore_errors):
+                            notes.append(
+                                f"Ignored error during validation of '{stream_name}/{dkey_name}': {e}"
+                            )
+                            continue
+                        return False, [msg]
+
                     except StructureValidationException as e:
                         msg = f"Structure validation of '{stream_name}/{dkey_name}' failed: {e}"
                         return False, [msg]
 
                     except Exception as e:
-                        if any(re.search(msg, str(e)) for msg in ignore_errors):
+                        if any(re.search(ptrn, str(e)) for ptrn in ignore_errors):
                             notes.append(
                                 f"Ignored error during validation of '{stream_name}/{dkey_name}': {e}"
                             )

@@ -51,7 +51,7 @@
         "dataset": "/entry/data/data"
       },
       "root": "{{ root_path }}",
-      "resource_path": "/multipart_hdf5",
+      "resource_path": "/multipart_hdf5/",
       "spec": "AD_HDF5",
       "uid": "det-key3-uid"
     }

@@ -1,15 +1,16 @@
 import collections
 import dataclasses
 import warnings
-from typing import Literal, cast
+from typing import Literal, cast, Optional
 
 import numpy as np
 from event_model.documents import EventDescriptor, StreamDatum, StreamResource
 from tiled.mimetypes import DEFAULT_ADAPTERS_BY_MIMETYPE
+from tiled.storage import size_from_uri
 from tiled.structures.array import ArrayStructure, BuiltinDtype, StructDtype
+from tiled.structures.bytes import BytesStructure
 from tiled.structures.core import StructureFamily
 from tiled.structures.data_source import Asset, DataSource, Management
-
 from ..utils import compile_template, list_summands
 
 
@@ -96,6 +97,7 @@ class ConsolidatorBase:
     """
 
     supported_mimetypes: set[str] = {"application/octet-stream"}
+    default_asset_role: str = "data_uris"  # Default parameter (role) for the asset(s)
     join_method: Literal["stack", "concat"] = "concat"
     join_chunks: bool = True
 
@@ -105,13 +107,20 @@ class ConsolidatorBase:
         self.data_key = stream_resource["data_key"]
         self.uri = stream_resource["uri"]
         self.assets: list[Asset] = [
-            Asset(data_uri=self.uri, is_directory=False, parameter="data_uris", num=0)
+            Asset(
+                data_uri=self.uri,
+                is_directory=False,
+                parameter=self.default_asset_role,
+                num=0,
+            )
         ]
         self._sres_parameters = stream_resource["parameters"]
-        self._indx_offset = 0  # To reset file index for each new StreamResource
+        self._indx_offset = 0  # To reset file index counter for each new StreamResource
 
         # Any metadata to be set on the corresponding node in Tiled
         self.metadata: dict = {}
+        if spec := self._sres_parameters.get("spec"):
+            self.metadata["spec"] = spec
 
         # Find datum shape and machine dtype
         data_desc = descriptor["data_keys"][self.data_key]
@@ -465,6 +474,121 @@ class ConsolidatorBase:
         return self.init_adapter(adapter_class=adapter_class)
 
 
+class BytesConsolidator:
+    """Consolidator for opaque binary files registered as the `bytes` structure family.
+
+    Unlike `ConsolidatorBase`, this consolidator does not interpret or reshape
+    the data: each StreamDatum yields one or more `Asset`s carrying a file URI,
+    and the corresponding Tiled node is a `bytes` node whose data can be
+    downloaded but not sliced or read as an array.
+    """
+
+    supported_mimetypes: set[str] = {"application/octet-stream"}
+    default_asset_role: str = "data_uris"  # Default parameter (role) for the asset(s)
+
+    def __init__(self, stream_resource: StreamResource, descriptor: EventDescriptor):
+        self.mimetype: str = self.get_supported_mimetype(stream_resource)
+        self.metadata: dict = {}
+        self.template: Optional[str] = None
+        self.data_key: str = stream_resource["data_key"]
+        self.uri: str = stream_resource["uri"]
+        self.assets: list[Asset] = []
+        self._indx_offset: int = 0
+
+        self.update_from_stream_resource(stream_resource)
+
+        # Preserve the originating Bluesky spec (if any) as metadata
+        if spec := stream_resource["parameters"].get("spec"):
+            self.metadata["spec"] = spec
+
+    @classmethod
+    def get_supported_mimetype(cls, sres):
+        if sres["mimetype"] not in cls.supported_mimetypes:
+            raise ValueError(
+                f"A data source of {sres['mimetype']} type can not be handled by {cls.__name__}."
+            )
+        return sres["mimetype"]
+
+    def get_datum_uri(self, indx: int):
+        """Return a full uri for a datum (an individual file) based on its index in the sequence.
+
+        This relies on the `template` parameter passed in the StreamResource, which is a string in the "new"
+        Python formatting style that can be evaluated to a file name using the `.format(indx)` method given an
+        integer index, e.g. "{:05d}.ext".
+
+        The URI and the rendered template are concatenated verbatim, so
+        the caller controls whether a `/` separator is present. Both
+        conventions in the wild are supported: templates that render a
+        bare filename appended to a filename-prefix URI (e.g. `.../uid`
+        + `_{:d}.bin`) and templates that carry their own leading `/`
+        appended to a directory URI (e.g. `.../dir` + `/{filename}.bin`).
+        A single degenerate `//` at the junction (both sides carrying a
+        slash) is collapsed to `/`.
+
+        If template is not set, we assume that the uri is provided directly in the StreamResource document (i.e.
+        a single file case), and return it as is.
+        """
+
+        if not self.template:
+            return self.uri
+        tail = self.template.format(indx - self._indx_offset)
+        if self.uri.endswith("/") and tail.startswith("/"):
+            tail = tail.lstrip("/")
+        return self.uri + tail
+
+    def consume_stream_datum(self, doc: StreamDatum):
+        """Register one Asset per file index in the incoming StreamDatum."""
+        first_file_indx = doc["indices"]["start"]
+        last_file_indx = doc["indices"]["stop"]
+        for indx in range(first_file_indx, last_file_indx):
+            new_asset = Asset(
+                data_uri=self.get_datum_uri(indx),
+                is_directory=False,
+                parameter=self.default_asset_role,
+                num=len(self.assets),
+            )
+            self.assets.append(new_asset)
+
+        return Patch(
+            offset=(first_file_indx,), shape=(last_file_indx - first_file_indx,)
+        )
+
+    def update_from_stream_resource(self, stream_resource: StreamResource):
+        "Update the consolidator with a new StreamResource document"
+
+        self._sres_parameters = stream_resource["parameters"]
+        if template := self._sres_parameters.get("template"):
+            filename = self._sres_parameters.get("filename", "")
+            self.template = compile_template(template, filename)
+
+        # Increment the offset to reset the file index counter to start from "0" for the new StreamResource template
+        self._indx_offset = len(self.assets)
+
+    def validate(self, fix_errors: bool = False) -> list[str]:
+        """Verify each registered asset is reachable; bytes payloads are otherwise opaque."""
+        from .validator import AssetValidationException
+
+        for ast in self.assets:
+            try:
+                size_from_uri(ast.data_uri)
+            except (FileNotFoundError, OSError, ValueError) as e:
+                raise AssetValidationException(
+                    f"Could not determine size of asset {ast.data_uri}: {type(e).__name__}: {e}"
+                ) from e
+        return []
+
+    def get_data_source(self) -> DataSource:
+        return DataSource(
+            mimetype=self.mimetype,
+            assets=self.assets,
+            structure_family=StructureFamily.bytes,
+            structure=BytesStructure(),
+            parameters={},
+            properties={},
+            management=Management.external,
+        )
+
+
 class CSVConsolidator(ConsolidatorBase):
     supported_mimetypes: set[str] = {"text/csv;header=absent"}
     join_method: Literal["stack", "concat"] = "concat"
@@ -537,7 +661,7 @@ class HDF5Consolidator(ConsolidatorBase):
         asset = Asset(
             data_uri=stream_resource["uri"],
             is_directory=False,
-            parameter="data_uris",
+            parameter=self.default_asset_role,
             num=len(self.assets),
         )
         self.assets.append(asset)
@@ -551,19 +675,39 @@ class MultipartRelatedConsolidator(ConsolidatorBase):
     ):
         super().__init__(stream_resource, descriptor)
         self.assets.clear()  # Assets will be populated based on datum indices
-        self.data_uris: list[str] = []
-        self.chunk_shape = self.chunk_shape or (
-            1,
-        )  # I.e. number of frames per file (tiff, jpeg, etc.)
-        if self.join_method == "concat":
-            assert self.datum_shape[0] % self.chunk_shape[0] == 0, (
-                f"Number of frames per file ({self.chunk_shape[0]}) must divide the total number of frames per "
-                f"datum ({self.datum_shape[0]}): variable-sized files are not allowed."
+        self.chunk_shape = self.chunk_shape or (1,)  # num frames per file
+
+        # Ensure that the number of frames per file divides the number of frames per datum;
+        # if not, silently coerce to a single file per datum but warn.
+        if (self.join_method == "concat") and (
+            self.datum_shape[0] % self.chunk_shape[0] != 0
+        ):
+            warnings.warn(
+                f"Number of frames per file ({self.chunk_shape[0]}) does not divide "
+                f"the total number of frames per datum ({self.datum_shape[0]}); "
+                f"coercing chunk_shape to ({self.datum_shape[0]},) (one file per datum).",
+                stacklevel=2,
             )
+            self.chunk_shape = (self.datum_shape[0],)
+
+        self._recompute_files_per_datum()
 
         # Compile and set the filename template
         self.template = compile_template(
             self._sres_parameters["template"], self._sres_parameters.get("filename", "")
+        )
+
+    def _recompute_files_per_datum(self):
+        """Refresh cached files_per_datum from current sres_parameters and shape.
+
+        Called at __init__ and again on each `update_from_stream_resource` so a
+        subsequent StreamResource with a different `files_per_datum` (or implied
+        by chunking) is honored.
+        """
+        self.files_per_datum = self._sres_parameters.get("files_per_datum") or (
+            self.datum_shape[0] // self.chunk_shape[0]
+            if self.join_method == "concat"
+            else self.metadata.get("frame_per_point", 1)
         )
 
     def get_datum_uri(self, indx: int):
@@ -573,13 +717,23 @@ class MultipartRelatedConsolidator(ConsolidatorBase):
         Python formatting style that can be evaluated to a file name using the `.format(indx)` method given an
         integer index, e.g. "{:05d}.ext".
 
-        If template is not set, we assume that the uri is provided directly in the StreamResource document (i.e.
-        a single file case), and return it as is.
+        The URI and the rendered template are concatenated verbatim, so the caller controls whether a `/` separator
+        is present. Both conventions in the wild are supported: templates that render a bare filename appended
+        to a filename-prefix URI (e.g. `.../uid` + `_{:d}.tif`) and templates that carry their own leading `/`
+        appended to a directory URI (e.g. `.../dir` + `/{filename}.tif`).
+        A single degenerate `//` at the junction (both sides carrying a slash) is collapsed to `/`.
+
+        If template is not set, we assume that the uri is provided directly in the StreamResource document
+        (i.e. a single file case), and return it as is.
         """
 
-        if self.template:
-            return self.uri + self.template.format(indx - self._indx_offset)
-        return self.uri
+        if not self.template:
+            return self.uri
+
+        tail = self.template.format(indx - self._indx_offset)
+        if self.uri.endswith("/") and tail.startswith("/"):
+            tail = tail.lstrip("/")
+        return self.uri + tail
 
     def consume_stream_datum(self, doc: StreamDatum):
         """Determine the number and names of files from indices of datums and the number of files per datum.
@@ -594,23 +748,16 @@ class MultipartRelatedConsolidator(ConsolidatorBase):
         of the resulting dataset, and hence corresponds to a single file.
         """
 
-        files_per_datum = (
-            self.datum_shape[0] // self.chunk_shape[0]
-            if self.join_method == "concat"
-            else self.metadata.get("frame_per_point", 1)
-        )
-        first_file_indx = doc["indices"]["start"] * files_per_datum
-        last_file_indx = doc["indices"]["stop"] * files_per_datum
+        first_file_indx = doc["indices"]["start"] * self.files_per_datum
+        last_file_indx = doc["indices"]["stop"] * self.files_per_datum
         for indx in range(first_file_indx, last_file_indx):
-            new_datum_uri = self.get_datum_uri(indx)
             new_asset = Asset(
-                data_uri=new_datum_uri,
+                data_uri=self.get_datum_uri(indx),
                 is_directory=False,
-                parameter="data_uris",
+                parameter=self.default_asset_role,
                 num=len(self.assets),
             )
             self.assets.append(new_asset)
-            self.data_uris.append(new_datum_uri)
 
         return super().consume_stream_datum(doc)
 
@@ -621,7 +768,8 @@ class MultipartRelatedConsolidator(ConsolidatorBase):
         self.template = compile_template(
             self._sres_parameters["template"], self._sres_parameters.get("filename", "")
         )
-        # Reset the file index counter to start from "0" for the new StreamResource template
+        self._recompute_files_per_datum()
+        # Increment the offset to reset the file index counter to start from "0" for the new StreamResource template
         self._indx_offset = len(self.assets)
 
 
@@ -662,6 +810,7 @@ class NPYConsolidator(MultipartRelatedConsolidator):
 CONSOLIDATOR_REGISTRY = collections.defaultdict(
     lambda: ConsolidatorBase,
     {
+        "application/octet-stream": BytesConsolidator,
         "text/csv;header=absent": CSVConsolidator,
         "application/x-hdf5": HDF5Consolidator,
         "multipart/related;type=image/tiff": TIFFConsolidator,
