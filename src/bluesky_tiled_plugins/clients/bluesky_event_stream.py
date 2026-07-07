@@ -9,6 +9,7 @@ from tiled.client.composite import CompositeClient
 from tiled.client.container import DEFAULT_STRUCTURE_CLIENT_DISPATCH, Container
 from tiled.utils import DictView, OneShotCachedMap, Sentinel, node_repr
 
+from ..exporters import build_descriptor_docs
 from ._common import IPYTHON_METHODS
 
 DATAVALUES = Sentinel("DATAVALUES")
@@ -17,7 +18,7 @@ TIMESTAMPS = Sentinel("TIMESTAMPS")
 
 class BlueskyEventStream(Container):
     _ipython_display_ = None
-    _repr_mimebundle__ = None
+    _repr_mimebundle_ = None
 
     def __new__(cls, context, *, item, structure_clients, **kwargs):
         # When inheriting from BlueskyEventStream, return the class itself
@@ -155,9 +156,9 @@ class BlueskyEventStreamV2SQL(OneShotCachedMap):
 
                     # Add values and timestamps from config_updates
                     for upd in updates:
-                        if upd_config := upd.get("configuration", {}):
-                            _vs.append(upd_config.get("data", {}).get(key))
-                            _ts.append(upd_config.get("timestamps", {}).get(key))
+                        upd_obj = upd.get("configuration", {}).get(obj_name, {})
+                        _vs.append(upd_obj.get("data", {}).get(key))
+                        _ts.append(upd_obj.get("timestamps", {}).get(key))
 
                     cf_vals[obj_name][key] = VirtualArrayClient(_vs)
                     cf_time[obj_name][key] = VirtualArrayClient(_ts)
@@ -185,20 +186,18 @@ class BlueskyEventStreamV2SQL(OneShotCachedMap):
 
     @functools.cached_property
     def descriptors(self):
-        # Go back to the BlueskyRun node and request the documents
-        # the path is: bs_run_node/streams/current_stream (old) or bs_run_node/current_stream (new)
+        stream_name = self.metadata.get("stream_name") or self["data"].item["id"]
+        # Reach up to the BlueskyRun node to pull the run_start uid; the
+        # stream metadata itself does not carry it.
         bs_run_node = self["data"].parent
         if bs_run_node.item["id"] == "streams" and (
             "BlueskyRun" not in {s.name for s in bs_run_node.specs}
         ):
-            # The parent is the old "streams" node, go up one more level
             bs_run_node = bs_run_node.parent
-        stream_name = self.metadata.get("stream_name") or self["data"].item["id"]
-        return [
-            doc
-            for name, doc in bs_run_node.documents()
-            if name == "descriptor" and doc["name"] == stream_name
-        ]
+        run_start_uid = bs_run_node.metadata.get("start", {}).get("uid")
+        return build_descriptor_docs(
+            dict(self.metadata), stream_name, run_start_uid=run_start_uid
+        )
 
     @property
     def _descriptors(self):
@@ -264,12 +263,18 @@ class CompositeSubsetClient(CompositeClient):
     def _keys_slice(
         self, start, stop, direction, page_size: int | None = None, **kwargs
     ):
-        yield from self._keys[start : stop : -1 if direction < 0 else 1]  # noqa: 203
+        keys = self._keys[start:stop]
+        if direction < 0:
+            keys = keys[::-1]
+        yield from keys
 
     def _items_slice(
         self, start, stop, direction, page_size: int | None = None, **kwargs
     ):
-        for key in self._keys[start : stop : -1 if direction < 0 else 1]:  # noqa: 203
+        keys = self._keys[start:stop]
+        if direction < 0:
+            keys = keys[::-1]
+        for key in keys:
             yield key, self[key]
 
     def __iter__(self):
@@ -371,17 +376,13 @@ class BlueskyEventStreamV3(BlueskyEventStream, CompositeClient):
 
     @functools.cached_property
     def descriptors(self):
-        # Go back to the BlueskyRun node and requests the documents
         stream_name = self.metadata.get("stream_name") or self.item["id"]
-        # the path is: bs_run_node/streams/current_stream (old) or bs_run_node/current_stream (new)
         bs_run_node = self.parent
         if bs_run_node.item["id"] == "streams" and (
             "BlueskyRun" not in {s.name for s in bs_run_node.specs}
         ):
-            # The parent is the old "streams" node, go up one more level
             bs_run_node = bs_run_node.parent
-        return [
-            doc
-            for name, doc in bs_run_node.documents()
-            if name == "descriptor" and doc["name"] == stream_name
-        ]
+        run_start_uid = bs_run_node.metadata.get("start", {}).get("uid")
+        return build_descriptor_docs(
+            dict(self.metadata), stream_name, run_start_uid=run_start_uid
+        )

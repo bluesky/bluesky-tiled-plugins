@@ -93,9 +93,8 @@ class CatalogOfBlueskyRuns(Container):
     def is_sql(self):
         for spec in self.specs:
             if spec.name == "CatalogOfBlueskyRuns":
-                if spec.version and spec.version.startswith("3."):
-                    return True
-                return False
+                return bool(spec.version and spec.version.startswith("3."))
+        return False
 
     def __getitem__(self, key):
         # For convenience and backward-compatiblity reasons, we support
@@ -138,8 +137,9 @@ class CatalogOfBlueskyRuns(Container):
         results = self.search(Eq("start.scan_id", scan_id))
         if not results:
             raise KeyError(f"No match for scan_id={scan_id}")
-        # Return latest match.
-        return results.values().last()
+        # Return latest match; sort descending by start time so the newest
+        # duplicate comes first regardless of the server-side default.
+        return results.sort([("start.time", -1)]).values().first()
 
     def _lookup_by_partial_uid(self, partial_uid):
         if len(partial_uid) < 5:

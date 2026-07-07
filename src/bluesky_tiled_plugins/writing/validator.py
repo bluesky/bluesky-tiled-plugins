@@ -1,6 +1,5 @@
 import logging
 import re
-import time
 import copy
 import collections
 from dataclasses import asdict
@@ -139,8 +138,6 @@ def validate(
                         logger.warning(f"Ignored reading validation error: {e}")
                     elif raise_on_error:
                         raise e
-
-            time.sleep(0.1)
 
     if try_reading and (not errored_keys):
         logger.info("Reading validation completed successfully.")

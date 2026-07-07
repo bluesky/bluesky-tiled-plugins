@@ -1,6 +1,7 @@
 import copy
 import itertools
 import logging
+import math
 from collections import defaultdict, deque, namedtuple
 from collections.abc import Callable
 from dataclasses import asdict
@@ -236,7 +237,10 @@ class RunNormalizer(DocumentRouter):
         self._token_refs: dict[str, Callable] = {}
         self.dispatcher = Dispatcher()
         self.patches = patches or {}
-        self.spec_to_mimetype = MIMETYPE_LOOKUP | (spec_to_mimetype or {})
+        self.spec_to_mimetype = defaultdict(
+            lambda: "application/octet-stream",
+            {**MIMETYPE_LOOKUP, **(spec_to_mimetype or {})},
+        )
 
         self._next_frame_index: dict[tuple[str, str], dict[str, int]] = defaultdict(
             lambda: {"carry": 0, "index": 0}
@@ -509,9 +513,9 @@ class RunNormalizer(DocumentRouter):
         )
         for key in self._ext_keys:
             if key in data_keys:
-                data_keys[key]["external"] = data_keys[key].pop(
-                    "external", ""
-                )  # Make sure the value is not None
+                # Make sure the value of "external" is not None
+                if data_keys[key].get("external") is None:
+                    data_keys[key]["external"] = ""
 
         # Keep a reference to the descriptor name (stream) by its uid
         self._desc_name_by_uid[doc["uid"]] = doc["name"]
@@ -981,8 +985,10 @@ class _RunWriter(DocumentRouter):
             raise
 
         finally:
-            # Write the stop document to the metadata, include any notes from normalizer
-            notes = doc.pop("_run_normalizer_notes", []) + self.notes
+            # Write the stop document to the metadata, include notes from the normalizer, if any
+            notes = list(
+                dict.fromkeys(doc.pop("_run_normalizer_notes", []) + self.notes)
+            )
             md_update = {"stop": doc, **({"notes": notes} if notes else {})}
             self.root_node.update_metadata(metadata=md_update, drop_revision=True)
 
@@ -1011,7 +1017,7 @@ class _RunWriter(DocumentRouter):
                 if ("external" not in val.keys()) and (val.get("dtype") == "array"):
                     if None in val.get("shape", ()):
                         self._int_ragged_array_keys[desc_name].add(key)
-                    elif 0 <= self._max_array_size < sum(val.get("shape", ())):
+                    elif 0 <= self._max_array_size < math.prod(val.get("shape", ())):
                         self._int_array_keys[desc_name].add(key)
         else:
             # Rare Case: This new descriptor likely updates stream configs mid-experiment
@@ -1253,6 +1259,8 @@ class TiledWriter:
         spec_to_mimetype: dict[str, str] | None = None,
         backup_directory: str | None = None,
         batch_size: int = BATCH_SIZE,
+        max_array_size: int = MAX_ARRAY_SIZE,
+        validate: bool = False,
         **kwargs,
     ):
         client = from_uri(uri, **kwargs)
@@ -1263,6 +1271,8 @@ class TiledWriter:
             spec_to_mimetype=spec_to_mimetype,
             backup_directory=backup_directory,
             batch_size=batch_size,
+            max_array_size=max_array_size,
+            validate=validate,
         )
 
     @classmethod
@@ -1275,6 +1285,8 @@ class TiledWriter:
         spec_to_mimetype: dict[str, str] | None = None,
         backup_directory: str | None = None,
         batch_size: int = BATCH_SIZE,
+        max_array_size: int = MAX_ARRAY_SIZE,
+        validate: bool = False,
         **kwargs,
     ):
         client = from_profile(profile, **kwargs)
@@ -1285,6 +1297,8 @@ class TiledWriter:
             spec_to_mimetype=spec_to_mimetype,
             backup_directory=backup_directory,
             batch_size=batch_size,
+            max_array_size=max_array_size,
+            validate=validate,
         )
 
     def __call__(self, name, doc):

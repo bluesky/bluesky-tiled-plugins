@@ -5,5 +5,6 @@
 
 IPYTHON_METHODS = {
     "_ipython_canary_method_should_not_exist_",
-    "_repr_mimebundle__ipython_display_",
+    "_repr_mimebundle_",
+    "_ipython_display_",
 }

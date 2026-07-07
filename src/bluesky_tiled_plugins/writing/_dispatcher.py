@@ -34,9 +34,14 @@ class Dispatcher:
 
         Parameters
         ----------
-        name : {'start', 'descriptor', 'event', 'stop'}
+        name : `DocumentNames` or str
+            One of ``'start'``, ``'descriptor'``, ``'event'``, ``'stop'``,
+            ``'resource'``, ``'datum'``, ``'stream_resource'``,
+            ``'stream_datum'``, or ``'event_page'`` / ``'datum_page'``.
         doc : dict
         """
+        if not isinstance(name, DocumentNames):
+            name = DocumentNames[name]
         exceptions = self.cb_registry.process(name, name.name, doc)
         for exc, traceback in exceptions:  # noqa: B007
             warn(  # noqa: B028

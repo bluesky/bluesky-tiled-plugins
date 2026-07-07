@@ -1,6 +1,109 @@
 import copy
 import json
+import os
+import re
 from collections import defaultdict
+
+from event_model import DocumentNames, schema_validators
+
+_DESCRIPTOR_VALIDATOR = schema_validators[DocumentNames.descriptor]
+
+# Metadata keys that live on the Tiled stream node but are not part of
+# the `EventDescriptor` schema and must be stripped before validation.
+_NON_DESCRIPTOR_KEYS = frozenset({"_config_updates", "stream_name"})
+
+
+def build_descriptor_docs(raw_metadata, stream_name, run_start_uid=None):
+    """Reconstruct the sequence of `EventDescriptor` documents for a
+    single stream from the raw metadata dictionary cached on its Tiled node.
+
+    The stored metadata on a Tiled node is user-arbitrary, so this
+    helper narrows the raw metadata down to the fields that make up a
+    valid `EventDescriptor` document (per the `event_model` schema)
+    and validates the result before returning it. Sharing this
+    assembly logic between the JSON-Seq exporter and the client
+    `descriptors` properties keeps their output byte-identical.
+
+    Parameters
+    ----------
+    raw_metadata : dict
+        The `metadata()` payload of the stream node. May contain
+        arbitrary keys; only the ones defined by the `EventDescriptor`
+        schema are consumed. Any `_config_updates` list is unfolded
+        into subsequent descriptor documents.
+    stream_name : str
+        The `name` field to place on every reconstructed descriptor.
+    run_start_uid : str or None
+        The UID of the `RunStart` document that owns this stream. When
+        supplied, it is written to `run_start` on every descriptor.
+
+    Returns
+    -------
+    list of dict
+        One or more descriptor documents validated against the
+        `event_model` `EventDescriptor` schema.
+    """
+    base = {k: v for k, v in raw_metadata.items() if k not in _NON_DESCRIPTOR_KEYS}
+    base["name"] = stream_name
+    if run_start_uid is not None:
+        base["run_start"] = run_start_uid
+    object_keys = defaultdict(list)
+    for key, val in base.get("data_keys", {}).items():
+        if obj_name := val.get("object_name"):
+            object_keys[obj_name].append(key)
+    base["object_keys"] = dict(object_keys)
+
+    descriptors = [base]
+    for upd in raw_metadata.get("_config_updates", []):
+        desc = copy.deepcopy(descriptors[-1])
+        if "uid" in upd:
+            desc["uid"] = upd["uid"]
+        if "time" in upd:
+            desc["time"] = upd["time"]
+        for obj_name, obj in upd.get("configuration", {}).items():
+            for key in obj.get("data", {}):
+                desc["configuration"][obj_name]["data"][key] = obj["data"][key]
+                desc["configuration"][obj_name]["timestamps"][key] = obj["timestamps"][
+                    key
+                ]
+        descriptors.append(desc)
+
+    for desc in descriptors:
+        _DESCRIPTOR_VALIDATOR.validate(desc)
+    return descriptors
+
+
+def _synthesize_multipart_template(uris):
+    """Infer an old-style filename template from a list of concrete URIs.
+
+    Given URIs like ``file:///.../frame_000000.tif``, ``.../frame_000001.tif``,
+    return ``(base_uri, template, start_index)`` such that
+    ``base_uri + template % (start_index + i) == uris[i]`` for every ``i``.
+
+    Returns ``(None, None, None)`` if the URIs don't fit a single numeric-field
+    pattern; callers should fall back to a different strategy in that case.
+    """
+    if not uris:
+        return None, None, None
+    if len(uris) == 1:
+        # Nothing to infer; treat the whole URI as the base.
+        return uris[0], "", 0
+    prefix = os.path.commonprefix(uris)
+    slash = prefix.rfind("/")
+    prefix = prefix[: slash + 1] if slash >= 0 else prefix
+    suffix0 = uris[0][len(prefix) :]
+    match = re.search(r"\d+", suffix0)
+    if not match:
+        return None, None, None
+    lo, hi = match.span()
+    width = hi - lo
+    pre, post = suffix0[:lo], suffix0[hi:]
+    start_index = int(suffix0[lo:hi])
+    template = f"{pre}%0{width}d{post}"
+    for i, u in enumerate(uris):
+        if u != prefix + template % (start_index + i):
+            return None, None, None
+    return prefix, template, start_index
 
 
 async def json_seq_exporter(mimetype, adapter, metadata, filter_for_access):
@@ -32,7 +135,7 @@ async def json_seq_exporter(mimetype, adapter, metadata, filter_for_access):
         raise ValueError("This exporter only works with BlueskyRun v3.x")
 
     adapter = await filter_for_access(adapter)
-    yield json.dumps({"name": "start", "doc": metadata.get("start", {})})
+    start_doc = {"name": "start", "doc": metadata.get("start", {})}
     result = []
 
     # Generate descriptors
@@ -51,35 +154,23 @@ async def json_seq_exporter(mimetype, adapter, metadata, filter_for_access):
             await desc_node.keys_range(offset=0, limit=None)
         )  # Composite parts
 
-        # First (or the only) descriptor
-        desc_doc = {k: v for k, v in desc_meta.items() if k not in {"_config_updates"}}
-        desc_doc["run_start"] = metadata.get("start", {}).get("uid")
-        desc_doc["name"] = desc_name
-        desc_doc["object_keys"] = defaultdict(list)
-        for key, val in desc_doc["data_keys"].items():
-            if obj_name := val.get("object_name"):
-                desc_doc["object_keys"][obj_name].append(key)
-
-        result.append({"name": "descriptor", "doc": desc_doc})
-
-        # Process subsequent descriptors, if any
-        desc_time_uids = [{"uid": desc_doc["uid"], "time": desc_doc["time"]}]
-        for upd in desc_meta.get("_config_updates", []):
-            desc_doc = copy.deepcopy(desc_doc)
-            desc_doc["uid"] = upd["uid"]
-            desc_doc["time"] = upd["time"]
-            desc_time_uids.extend([{"uid": desc_doc["uid"], "time": desc_doc["time"]}])
-            for obj_name, obj in upd.get("configuration", {}).items():
-                # This assumes that that the full configuration was present in the first descriptor
-                for key in obj["data"].keys():
-                    desc_doc["configuration"][obj_name]["data"][key] = obj["data"][key]
-                    desc_doc["configuration"][obj_name]["timestamps"][key] = obj[
-                        "timestamps"
-                    ][key]
-
+        # Reconstruct the descriptor sequence through the shared helper
+        # so the client `descriptors` properties and the exporter emit
+        # byte-identical, schema-validated documents.
+        descriptor_docs = build_descriptor_docs(
+            dict(desc_meta),
+            stream_name=desc_name,
+            run_start_uid=metadata.get("start", {}).get("uid"),
+        )
+        desc_time_uids = [{"uid": d["uid"], "time": d["time"]} for d in descriptor_docs]
+        for desc_doc in descriptor_docs:
             result.append({"name": "descriptor", "doc": desc_doc})
 
         # Generate events
+        # 1. Internal tabular data
+        row_data = {}  # seq_num -> {key: value}
+        row_ts = {}  # seq_num -> {key: timestamp}
+        row_time = {}  # seq_num -> row time
         if "internal" in part_names:
             internal_node = await desc_node.lookup_adapter(["internal"])
             df = await internal_node.read()
@@ -89,61 +180,126 @@ async def json_seq_exporter(mimetype, adapter, metadata, filter_for_access):
                 if k not in {"seq_num", "time"} and not k.startswith("ts_")
             ]
             for row in df.to_dict(orient="records"):
-                desc_uid = desc_time_uids[0][
-                    "uid"
-                ]  # same as desc_node.metadata()["uid"] if no updates
-                for _desc_uid_time in desc_time_uids[1:]:
-                    if _desc_uid_time["time"] <= row["time"]:
-                        desc_uid = _desc_uid_time["uid"]
-                event_doc = {"seq_num": row["seq_num"], "time": row["time"]}
-                event_doc["uid"] = (
-                    f"event-{desc_uid}-{row['seq_num']}"  # can be anything (unique)
-                )
-                event_doc["descriptor"] = desc_uid
-                event_doc["data"] = {
-                    k: row[k].tolist() if hasattr(row[k], "__array__") else row[k]
-                    for k in keys
-                }
-                event_doc["timestamps"] = {k: row[f"ts_{k}"] for k in keys}
-                result.append({"name": "event", "doc": event_doc})
+                sn = row["seq_num"]
+                row_time[sn] = row["time"]
+                data = row_data.setdefault(sn, {})
+                ts = row_ts.setdefault(sn, {})
+                for k in keys:
+                    data[k] = (
+                        row[k].tolist() if hasattr(row[k], "__array__") else row[k]
+                    )
+                    ts[k] = row[f"ts_{k}"]
+
+        # 2. Ragged internal arrays live in their own child nodes with
+        # `structure_family == "ragged"`. Merge them into the event
+        # sequence so re-ingest routes them back through `write_ragged`.
+        ragged_keys = set()
+        for part_name in part_names.difference(("internal",)):
+            part_node = await desc_node.lookup_adapter([part_name])
+            if getattr(part_node, "structure_family", None) != "ragged":
+                continue
+            ragged_keys.add(part_name)
+            ragged_array = await part_node.read()
+            values = ragged_array.tolist()
+            # Assume ragged rows are ordered by seq_num; if the internal
+            # table is present, seq_nums start at 1 and are contiguous.
+            seq_nums = (
+                sorted(row_data.keys()) if row_data else list(range(1, len(values) + 1))
+            )
+            for sn, val in zip(seq_nums, values):
+                row_data.setdefault(sn, {})[part_name] = val
+                row_ts.setdefault(sn, {})[part_name] = row_time.get(sn, 0.0)
+
+        for sn in sorted(row_data.keys()):
+            desc_uid = desc_time_uids[0]["uid"]
+            row_t = row_time.get(sn, 0.0)
+            for _desc_uid_time in desc_time_uids[1:]:
+                if _desc_uid_time["time"] <= row_t:
+                    desc_uid = _desc_uid_time["uid"]
+            event_doc = {
+                "seq_num": sn,
+                "time": row_t,
+                "uid": f"event-{desc_uid}-{sn}",
+                "descriptor": desc_uid,
+                "data": row_data[sn],
+                "timestamps": row_ts[sn],
+            }
+            result.append({"name": "event", "doc": event_doc})
 
         # Generate Stream Resources and Datums
         desc_uid = desc_node.metadata()["uid"]
-        for data_key in part_names.difference(("internal",)):
+        for data_key in part_names.difference(("internal",)).difference(ragged_keys):
             # Loop over data_keys for external data only
             sres_uid = f"sr-{desc_uid}-{data_key}"  # can be anything (unique)
             ds = (await desc_node.lookup_adapter([data_key])).data_sources[0]
-            uri = ds.assets[0].data_uri
-            for ast in ds.assets:
-                if ast.parameter in {"data_uris", "data_uri"}:
-                    uri = ast.data_uri
-                    break
+            asset_uris = [
+                a.data_uri
+                for a in sorted(ds.assets, key=lambda a: a.num or 0)
+                if a.parameter in {"data_uris", "data_uri"}
+            ]
+            parameters = dict(ds.parameters)
+
+            total_shape = ds.structure.shape
+            datum_shape = desc_node.metadata()["data_keys"][data_key]["shape"]
+            # Infer join_method from the relationship between total_shape and
+            # datum_shape. `stack` adds a leading dimension per datum;
+            # `concat` merges datums along an existing leading dimension.
+            is_stacked = len(total_shape) == len(datum_shape) + 1
+            n_datums = (
+                total_shape[0] if is_stacked else total_shape[0] // datum_shape[0]
+            )
+
+            # Multi-file (multipart) data sources persist adapter-only
+            # parameters and drop the original filename template. Re-derive
+            # a template from the concrete asset URIs so the emitted
+            # stream_resource can be re-ingested by a MultipartRelated
+            # consolidator.
+            datum_offset = 0
+            if len(asset_uris) > 1 and "template" not in parameters:
+                base_uri, template, start_index = _synthesize_multipart_template(
+                    asset_uris
+                )
+                if template is not None:
+                    uri = base_uri
+                    parameters["template"] = template
+                    parameters.setdefault("chunk_shape", [1])
+                    parameters.setdefault(
+                        "join_method", "stack" if is_stacked else "concat"
+                    )
+
+                    # If files don't start at index 0, offset the datum
+                    # indices so consolidator regenerates the same URIs.
+                    if start_index and datum_shape[0]:
+                        datum_offset = start_index // datum_shape[0]
+                else:
+                    uri = asset_uris[0]
+            else:
+                uri = asset_uris[0] if asset_uris else ds.assets[0].data_uri
+
             sres_doc = {
                 "data_key": data_key,
                 "uid": sres_uid,
                 "run_start": metadata.get("start", {}).get("uid"),
                 "mimetype": ds.mimetype,
-                "parameters": ds.parameters,
+                "parameters": parameters,
                 "uri": uri,
             }
             result.append({"name": "stream_resource", "doc": sres_doc})
 
             # Generate a single stream_datum document for the entire stream
             sdat_uid = f"sd-{desc_uid}-{data_key}-0"  # can be anything (unique)
-            total_shape = ds.structure.shape
-            datum_shape = desc_node.metadata()["data_keys"][data_key]["shape"]
-
-            max_indx = (
-                total_shape[0] // datum_shape[0] - 1
-                if len(total_shape) == len(datum_shape)
-                else total_shape[0] - 1
-            )
             sdat_doc = {
                 "uid": sdat_uid,
                 "stream_resource": sres_uid,
                 "descriptor": desc_uid,
-                "indices": {"start": 0, "stop": max_indx},
-                "seq_nums": {"start": 1, "stop": max_indx + 1},
+                "indices": {
+                    "start": datum_offset,
+                    "stop": datum_offset + n_datums,
+                },
+                "seq_nums": {
+                    "start": datum_offset + 1,
+                    "stop": datum_offset + n_datums + 1,
+                },
             }
             result.append({"name": "stream_datum", "doc": sdat_doc})
 
@@ -152,7 +308,7 @@ async def json_seq_exporter(mimetype, adapter, metadata, filter_for_access):
         result,
         key=lambda x: (
             x["doc"].get("time", float("inf")),
-            {"stream_resource": 0, "stream_datum": 1}.get(x["name"]),
+            {"stream_resource": 0, "stream_datum": 1}.get(x["name"], 2),
         ),
     )
 
@@ -165,7 +321,10 @@ async def json_seq_exporter(mimetype, adapter, metadata, filter_for_access):
     #             for x in batch_documents([(y["name"], y["doc"]) for y in result], size=1000)
     #         ]
 
-    for doc in result:
-        yield "\n" + json.dumps(doc)
+    result.append({"name": "stop", "doc": metadata.get("stop", {})})
 
-    yield "\n" + json.dumps({"name": "stop", "doc": metadata.get("stop", {})})
+    # RFC 7464: each record is preceded by the ASCII record-separator
+    # character (\x1E) and terminated by a newline.
+    yield "\x1e" + json.dumps(start_doc) + "\n"
+    for doc in result:
+        yield "\x1e" + json.dumps(doc) + "\n"

@@ -459,7 +459,12 @@ class ConsolidatorBase:
             warnings.warn(msg, stacklevel=2)
             notes.append(msg)
 
-        assert self.init_adapter() is not None, "Adapter can not be initialized"
+        try:
+            adapter = self.init_adapter()
+        except Exception as e:
+            raise RuntimeError(f"Adapter can not be initialized: {e}") from e
+        if adapter is None:
+            raise RuntimeError("Adapter can not be initialized")
 
         return notes
 

@@ -1,3 +1,4 @@
+import codecs
 import copy
 import functools
 import httpx
@@ -35,9 +36,34 @@ _document_types = {
     "event_page": EventPage,
     "datum_page": DatumPage,
     "resource": Resource,
-    "stream_resource": StreamDatum,
-    "stream_datum": StreamResource,
+    "stream_resource": StreamResource,
+    "stream_datum": StreamDatum,
 }
+
+
+def _iter_json_seq(byte_chunks):
+    """Yield (name, doc) parsed from a stream of bytes containing
+    document records in either RFC 7464 JSON-Seq framing (each record
+    prefixed with \\x1E and terminated by \\n) or legacy NDJSON framing
+    (records separated by \\n only). Accepting both keeps a newer client
+    interoperable with an older server during a rolling upgrade.
+    """
+    buffer = ""
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    for chunk in byte_chunks:
+        buffer += decoder.decode(chunk)
+        while "\n" in buffer:
+            line, buffer = buffer.split("\n", 1)
+            record = line.lstrip("\x1e").strip()
+            if not record:
+                continue
+            item = json.loads(record)
+            yield item["name"], _document_types[item["name"]](item["doc"])
+    buffer += decoder.decode(b"", final=True)
+    record = buffer.lstrip("\x1e").strip()
+    if record:
+        item = json.loads(record)
+        yield item["name"], _document_types[item["name"]](item["doc"])
 
 
 class BlueskyRun(Container):
@@ -95,7 +121,15 @@ class BlueskyRun(Container):
 
     @functools.cached_property
     def descriptors(self) -> list[dict[str, JSON_ITEM]]:
-        return [doc for name, doc in self.documents() if name == "descriptor"]
+        # Read descriptor documents from each stream's cached metadata
+        # rather than walking the full event stream, which would be
+        # catastrophic on runs with many events.
+        descriptors = []
+        for stream_name in self._stream_names:
+            stream = self[stream_name]
+            if hasattr(stream, "descriptors"):
+                descriptors.extend(stream.descriptors)
+        return descriptors
 
     def __getattr__(self, key):
         """
@@ -227,21 +261,11 @@ class BlueskyRunV2Mongo(BlueskyRunV2):
                     if response.is_error:
                         response.read()
                         handle_error(response)
-                    tail = ""
-                    for chunk in response.iter_bytes():
-                        for line in chunk.decode().splitlines(keepends=True):
-                            if line[-1] == "\n":
-                                item = json.loads(tail + line)
-                                yield (
-                                    item["name"],
-                                    _document_types[item["name"]](item["doc"]),
-                                )
-                                tail = ""
-                            else:
-                                tail += line
-                    if tail:
-                        item = json.loads(tail)
-                        yield (item["name"], _document_types[item["name"]](item["doc"]))
+                    # Accept both RFC 7464 JSON-Seq (each record prefixed
+                    # with \x1E, terminated by \n) and legacy NDJSON
+                    # (records separated by \n only) so a new client can
+                    # talk to an older server during a rolling upgrade.
+                    yield from _iter_json_seq(response.iter_bytes())
 
 
 class _BlueskyRunSQL(BlueskyRun):
@@ -349,17 +373,13 @@ class _BlueskyRunSQL(BlueskyRun):
     def _keys_slice(
         self, start, stop, direction, page_size: int | None = None, **kwargs
     ):
-        sorted_keys = (
-            reversed(self._stream_names) if direction < 0 else self._stream_names
-        )
+        sorted_keys = self._stream_names[::-1] if direction < 0 else self._stream_names
         return (yield from sorted_keys[start:stop])
 
     def _items_slice(
         self, start, stop, direction, page_size: int | None = None, **kwargs
     ):
-        sorted_keys = (
-            reversed(self._stream_names) if direction < 0 else self._stream_names
-        )
+        sorted_keys = self._stream_names[::-1] if direction < 0 else self._stream_names
         for key in sorted_keys[start:stop]:
             yield key, self[key]
 
@@ -375,9 +395,7 @@ class _BlueskyRunSQL(BlueskyRun):
         with io.BytesIO() as buffer:
             self.export(buffer, format="application/json-seq")
             buffer.seek(0)
-            for line in buffer:
-                parsed = json.loads(line.decode().strip())
-                yield parsed["name"], _document_types[parsed["name"]](parsed["doc"])
+            yield from _iter_json_seq(buffer)
 
 
 class BlueskyRunV2SQL(BlueskyRunV2, _BlueskyRunSQL):
