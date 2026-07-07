@@ -358,21 +358,22 @@ class RunNormalizer(DocumentRouter):
         # Some Datums contain datum_kwargs and the 'frame' field, which indicates the last index of the
         # frame. This should take precedence over the 'seq_num' field in the Event document. Keep the
         # last frame index in memory, since next Datums may refer to more than one frame (it is
-        # assumed that Events always refer to a single frame).
+        # assumed that Events always refer to a single frame). If `point_number` is provided in the
+        # datum_kwargs, use it as the index.
         # There are cases when the frame_index is reset during the scan (e.g. if Datums for the same
         # data_key belong to different Resources), so the 'carry' field is used to keep track of the
         # previous frame index.
         # In case when the index needs to RESET for each Resource, the `indices` dictionary should be
         # included in the datum_kwargs directly.
+
         sres_uid = datum_doc["resource"]
         datum_kwargs = datum_doc.get("datum_kwargs", {})
-        frame = datum_kwargs.pop("frame", None)
         if indices := datum_kwargs.pop("indices", None):
             index_start, index_stop = indices["start"], indices["stop"]
-        elif frame is not None:
-            desc_name = self._desc_name_by_uid[
-                desc_uid
-            ]  # Name of the descriptor (stream)
+        elif (point_number := datum_kwargs.pop("point_number", None)) is not None:
+            index_start, index_stop = point_number, point_number + 1
+        elif (frame := datum_kwargs.pop("frame", None)) is not None:
+            desc_name = self._desc_name_by_uid[desc_uid]
             _next_index = self._next_frame_index[(desc_name, data_key)]
             index_start = sum(_next_index.values())
             _next_index["index"] = frame + 1
