@@ -5,6 +5,8 @@ primary insertion fails.
 """
 
 import json
+import time
+import uuid
 
 import bluesky.plans as bp
 import ophyd.sim
@@ -66,6 +68,41 @@ def _read_jsonl_backup(tmp_path):
     assert len(files) == 1, f"expected exactly one backup file, got {files}"
     with open(files[0]) as fh:
         return [json.loads(line) for line in fh if line.strip()]
+
+
+def test_lookup_by_scan_id_returns_newest_duplicate(mongo_catalog_client):
+    """`catalog[scan_id]` must return the most recent run when multiple
+    runs share the same `scan_id`. This exercises `_lookup_by_scan_id`,
+    which does a server-side search and picks the newest match using
+    the catalog's default sort direction. A prior "hardening" broke
+    both by (a) passing a sort spec in the wrong shape and (b) sorting
+    by a nested key that the mongo-normalized adapter cannot traverse,
+    so this test guards against regressing to either failure mode.
+    """
+    scan_id = 42
+    old_uid = uuid.uuid4().hex
+    new_uid = uuid.uuid4().hex
+    t_old = time.time()
+    t_new = t_old + 100.0
+
+    for uid, t in [(old_uid, t_old), (new_uid, t_new)]:
+        mongo_catalog_client.post_document(
+            "start", {"uid": uid, "time": t, "scan_id": scan_id}
+        )
+        mongo_catalog_client.post_document(
+            "stop",
+            {
+                "uid": uuid.uuid4().hex,
+                "time": t + 1.0,
+                "run_start": uid,
+                "exit_status": "success",
+                "reason": "",
+                "num_events": {},
+            },
+        )
+
+    run = mongo_catalog_client[scan_id]
+    assert run.start["uid"] == new_uid
 
 
 def test_insert_round_trip(RE, mongo_catalog_client):

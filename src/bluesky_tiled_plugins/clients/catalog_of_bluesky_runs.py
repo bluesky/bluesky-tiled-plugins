@@ -137,9 +137,8 @@ class CatalogOfBlueskyRuns(Container):
         results = self.search(Eq("start.scan_id", scan_id))
         if not results:
             raise KeyError(f"No match for scan_id={scan_id}")
-        # Return latest match; sort descending by start time so the newest
-        # duplicate comes first regardless of the server-side default.
-        return results.sort([("start.time", -1)]).values().first()
+        # Return latest match.
+        return results.values().last()
 
     def _lookup_by_partial_uid(self, partial_uid):
         if len(partial_uid) < 5:
