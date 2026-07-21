@@ -6,12 +6,11 @@ from typing import Literal, cast, Optional
 import numpy as np
 from event_model.documents import EventDescriptor, StreamDatum, StreamResource
 from tiled.mimetypes import DEFAULT_ADAPTERS_BY_MIMETYPE
-from tiled.storage import size_from_uri
 from tiled.structures.array import ArrayStructure, BuiltinDtype, StructDtype
 from tiled.structures.bytes import BytesStructure
 from tiled.structures.core import StructureFamily
 from tiled.structures.data_source import Asset, DataSource, Management
-from ..utils import compile_template, list_summands
+from ..utils import compile_template, list_summands, size_from_uri
 
 
 @dataclasses.dataclass
