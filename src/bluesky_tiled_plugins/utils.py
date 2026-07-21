@@ -20,7 +20,7 @@ except ImportError:
         """Return the byte length of the asset at `data_uri`.
 
         A client-side version of the standard tiled's `size_from_uri` utility.
-        Only supports assets with a `file://` scheme, wassuming they are accessible
+        Only supports assets with a `file://` scheme, assuming they are accessible
         from the local filesystem. For other schemes, returns None.
         """
 
