@@ -569,7 +569,16 @@ class BytesConsolidator:
         self._indx_offset = len(self.assets)
 
     def validate(self, fix_errors: bool = False) -> list[str]:
-        """Nothing to validate for bytes payloads since they are opaque."""
+        """Verify each registered asset is reachable; bytes payloads are otherwise opaque."""
+        from .validator import AssetValidationException
+
+        for ast in self.assets:
+            try:
+                size_from_uri(ast.data_uri)
+            except (FileNotFoundError, OSError, ValueError) as e:
+                raise AssetValidationException(
+                    f"Could not determine size of asset {ast.data_uri}: {type(e).__name__}: {e}"
+                ) from e
         return []
 
     def get_data_source(self) -> DataSource:

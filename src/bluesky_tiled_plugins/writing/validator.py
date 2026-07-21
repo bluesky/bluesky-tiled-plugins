@@ -276,6 +276,16 @@ def validate_data_source(
         data_source, notes = copy.deepcopy(data_source), []
     structure = data_source.structure
 
+    # Update the sizes of Assets; raise on failure so callers get an explicit
+    # error rather than a downstream message that masks the root cause.
+    for ast in data_source.assets:
+        try:
+            ast.size = size_from_uri(ast.data_uri)
+        except (FileNotFoundError, OSError, ValueError) as e:
+            raise AssetValidationException(
+                f"Could not determine size of asset {ast.data_uri}: {type(e).__name__}: {e}"
+            ) from e
+
     # If this is a data source with BytesStructure, we cannot validate it further
     if isinstance(structure, BytesStructure):
         return data_source, notes
