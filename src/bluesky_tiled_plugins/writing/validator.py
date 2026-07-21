@@ -15,7 +15,7 @@ from tiled.structures.array import StructDtype, BuiltinDtype
 from tiled.structures.bytes import BytesStructure
 from tiled.structures.core import STRUCTURE_TYPES
 from tiled.structures.data_source import DataSource
-from ..utils import list_summands
+from ..utils import list_summands, size_from_uri
 
 
 logger = logging.getLogger(__name__)

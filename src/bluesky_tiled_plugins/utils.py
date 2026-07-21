@@ -1,5 +1,33 @@
 import collections.abc
 import re
+from urllib.parse import urlparse
+from tiled.utils import path_from_uri
+
+__all__ = [
+    "size_from_uri",
+    "truncate_json_overflow",
+    "compile_template",
+    "list_summands",
+]
+
+# If only tiled['client'] is installed we can not use the `size_from_uri` utility
+# from tiled.storage, so we provide a fallback implementation here.
+# TODO: Remove/refactor in future a release.
+try:
+    from tiled.storage import size_from_uri
+except ImportError:
+
+    def size_from_uri(data_uri: str) -> int:
+        """Return the byte length of the asset at `data_uri`.
+
+        A client-side version of the standard tiled's `size_from_uri` utility.
+        Only supports assets with a `file://` scheme, assuming they are accessible
+        from the local filesystem. For other schemes, returns None.
+        """
+
+        if urlparse(data_uri).scheme == "file":
+            return path_from_uri(data_uri).stat().st_size
+        return None
 
 
 def truncate_json_overflow(data):

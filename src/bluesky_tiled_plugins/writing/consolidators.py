@@ -10,7 +10,7 @@ from tiled.structures.array import ArrayStructure, BuiltinDtype, StructDtype
 from tiled.structures.bytes import BytesStructure
 from tiled.structures.core import StructureFamily
 from tiled.structures.data_source import Asset, DataSource, Management
-from ..utils import compile_template, list_summands
+from ..utils import compile_template, list_summands, size_from_uri
 
 
 @dataclasses.dataclass
