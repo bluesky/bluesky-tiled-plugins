@@ -11,7 +11,6 @@ from tiled.client.dataframe import DataFrameClient
 from tiled.client.utils import handle_error, retry_context
 from tiled.mimetypes import DEFAULT_ADAPTERS_BY_MIMETYPE
 from tiled.utils import safe_json_dump
-from tiled.storage import size_from_uri
 from tiled.structures.array import StructDtype, BuiltinDtype
 from tiled.structures.bytes import BytesStructure
 from tiled.structures.core import STRUCTURE_TYPES
@@ -276,16 +275,6 @@ def validate_data_source(
     else:
         data_source, notes = copy.deepcopy(data_source), []
     structure = data_source.structure
-
-    # Update the sizes of Assets; raise on failure so callers get an explicit
-    # error rather than a downstream message that masks the root cause.
-    for ast in data_source.assets:
-        try:
-            ast.size = size_from_uri(ast.data_uri)
-        except (FileNotFoundError, OSError, ValueError) as e:
-            raise AssetValidationException(
-                f"Could not determine size of asset {ast.data_uri}: {type(e).__name__}: {e}"
-            ) from e
 
     # If this is a data source with BytesStructure, we cannot validate it further
     if isinstance(structure, BytesStructure):
