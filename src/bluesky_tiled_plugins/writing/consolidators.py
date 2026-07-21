@@ -569,7 +569,7 @@ class BytesConsolidator:
         self._indx_offset = len(self.assets)
 
     def validate(self, fix_errors: bool = False) -> list[str]:
-        """Client can't assume be able to reach or validate remote Assets."""
+        """Nothing to validate for bytes payloads since they are opaque."""
         return []
 
     def get_data_source(self) -> DataSource:
