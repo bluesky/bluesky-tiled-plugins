@@ -13,6 +13,15 @@ from tiled.structures.core import StructureFamily
 from tiled.structures.data_source import Management
 
 
+# Most fixtures in this module do not set join_method explicitly and therefore rely on
+# the default, which currently triggers a DeprecationWarning announcing the upcoming
+# change of the default to "stack". Silence it at the module level so the strict
+# filterwarnings=["error"] policy does not turn expected usage into errors.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:.*default value of join_method will change.*:DeprecationWarning"
+)
+
+
 @pytest.fixture
 def descriptor():
     return {

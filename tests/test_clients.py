@@ -7,6 +7,14 @@ from examples.render import render_templated_documents
 from bluesky_tiled_plugins import TiledWriter
 from bluesky_tiled_plugins.clients.bluesky_run import _iter_json_seq
 
+# The example fixtures do not set join_method explicitly and thus rely on the default,
+# which currently triggers a DeprecationWarning announcing the upcoming change of the
+# default to "stack". Silence it at the module level so the strict
+# filterwarnings=["error"] policy does not turn expected usage into errors.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:.*default value of join_method will change.*:DeprecationWarning"
+)
+
 
 @pytest.fixture(scope="module", params=["internal_events", "external_assets"])
 def run_client(client, external_assets_folder, request):
