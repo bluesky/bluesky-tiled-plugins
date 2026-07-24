@@ -25,7 +25,7 @@
           "source": "file",
           "dtype": "array",
           "dtype_numpy": "<i8",
-          "shape": [1, 13, 17],
+          "shape": [13, 17],
           "dims": ["time", "dim_2", "dim_3"],
           "external": "STREAM:",
           "object_name": "det"

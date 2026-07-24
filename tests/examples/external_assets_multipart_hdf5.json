@@ -48,6 +48,7 @@
         "template": "%s%s_%6.6d.h5",
         "filename": "/dataset_part",
         "frame_per_point": 1,
+        "join_method": "concat",
         "dataset": "/entry/data/data"
       },
       "root": "{{ root_path }}",

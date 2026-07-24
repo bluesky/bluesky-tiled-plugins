@@ -45,7 +45,8 @@
     "doc": {
       "resource_kwargs": {
         "chunk_shape": [100, 13, 17],
-        "frame_per_point": 1
+        "frame_per_point": 1,
+        "join_method": "concat"
       },
       "root": "{{ root_path }}",
       "resource_path": "/dataset.h5",

@@ -88,8 +88,8 @@ class ConsolidatorBase:
         a method to join the data; if "stack", the resulting consolidated dataset is produced by joining all datums
         along a new dimension added on the left, e.g. a stack of tiff images, otherwise -- datums will be appended
         to the end of the existing leftmost dimension, e.g. rows of a table (similarly to concatenation in numpy).
-        The join_method can be overridden by the StreamResource parameter "join_method".
-        The default join_method is currently "concat" but will change to "stack" in a future version.
+        Default is "stack". The join_method can be overridden by the StreamResource parameter "join_method".
+        The use of "concat" as the join_method is deprecated and may be removed in a future version.
 
     join_chunks : bool
         if True, the chunking of the resulting dataset will be determined after consolidation, otherwise each part
@@ -99,7 +99,7 @@ class ConsolidatorBase:
 
     supported_mimetypes: set[str] = {"application/octet-stream"}
     default_asset_role: str = "data_uris"  # Default parameter (role) for the asset(s)
-    join_method: Literal["stack", "concat"] = "concat"
+    join_method: Literal["stack", "concat"] = "stack"
     join_chunks: bool = True
 
     def __init__(self, stream_resource: StreamResource, descriptor: EventDescriptor):
@@ -118,24 +118,22 @@ class ConsolidatorBase:
         self._sres_parameters = stream_resource["parameters"]
         self._indx_offset = 0  # To reset file index counter for each new StreamResource
 
-        # Warn when the join_method is not set explicitly and thus falls back to the default. The
-        # default will change from "concat" to "stack" in a future version, which alters the shape of
-        # the consolidated dataset, so downstream declared shapes may need to be updated accordingly.
-        if "join_method" not in self._sres_parameters:
-            warnings.warn(
-                "The default value of join_method will change from 'concat' to 'stack' in a "
-                "future version. This will change the shape of the consolidated dataset (a new "
-                "leading dimension is added when stacking). Please set join_method explicitly in "
-                "the StreamResource parameters and update the declared shape in the descriptor to "
-                "account for this change.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-
         # Possibly overwrite the join_method and join_chunks attributes. This must happen before the datum
         # shape is determined below, since the shape computation depends on the join_method.
         self.join_method = self._sres_parameters.get("join_method", self.join_method)
         self.join_chunks = self._sres_parameters.get("join_chunks", self.join_chunks)
+        # Warn when "concat" is explicitly requested via the StreamResource parameters: it is
+        # deprecated in favor of the new default, "stack", and may be removed in a future version.
+        # Consolidators whose intrinsic join_method is "concat" (e.g. CSVConsolidator) are unaffected,
+        # since their concat comes from the class default rather than the StreamResource parameters.
+        if self._sres_parameters.get("join_method") == "concat":
+            warnings.warn(
+                f"Consolidator for {self.mimetype} is using join_method='concat'. "
+                "This join_method is deprecated in favor of the default, 'stack', and may be "
+                "removed in a future version. Please use join_method='stack' instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
 
         # Any metadata to be set on the corresponding node in Tiled
         self.metadata: dict = {}
