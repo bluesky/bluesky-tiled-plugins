@@ -31,6 +31,15 @@ from bluesky_tiled_plugins import TiledWriter
 from bluesky_tiled_plugins.writing.validator import ValidationException
 
 
+# Many fixtures in this module do not set join_method explicitly and thus rely on the
+# default, which currently triggers a DeprecationWarning announcing the upcoming change
+# of the default to "stack". Silence it at the module level so the strict
+# filterwarnings=["error"] policy does not turn expected usage into errors.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:.*default value of join_method will change.*:DeprecationWarning"
+)
+
+
 class Named(HasName):
     name: str = ""
     root: str = "/root"
