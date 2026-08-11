@@ -231,7 +231,8 @@ async def json_seq_exporter(mimetype, adapter, metadata, filter_for_access):
         for data_key in part_names.difference(("internal",)).difference(ragged_keys):
             # Loop over data_keys for external data only
             sres_uid = f"sr-{desc_uid}-{data_key}"  # can be anything (unique)
-            ds = (await desc_node.lookup_adapter([data_key])).data_sources[0]
+            dkey_node = await desc_node.lookup_adapter([data_key])
+            ds = (await dkey_node.data_sources(include_assets=True))[0]
             asset_uris = [
                 a.data_uri
                 for a in sorted(ds.assets, key=lambda a: a.num or 0)

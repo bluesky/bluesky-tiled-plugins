@@ -74,7 +74,7 @@ async def validate_entry_structure(
     ignore_errors = ignore_errors or []
     for stream_name, stream_node in await entry.items_range(0, None):
         for dkey_name, dkey_node in await stream_node.items_range(0, None):
-            for data_source in dkey_node.data_sources:
+            for data_source in await dkey_node.data_sources(include_assets=True):
                 if data_source.management == Management.external:
                     try:
                         valid_data_source, _notes = validate_data_source(
