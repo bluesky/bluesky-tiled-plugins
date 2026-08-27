@@ -1,12 +1,11 @@
 # Where is Bluesky data stored
 
-Given a configuration like this:
-
 The metadata extracted from Run Start, Event Descriptor, and Run Stop documents
-is stored in the `tiled_catalog` database.
+is stored in the `tiled_catalog` PostgreSQL database.
 
-Pointers to large array data (e.g., images) extracted from (Stream) Resource and
-(Stream) Datum documents are also stored in the `tiled_catalog` database.
+Pointers to large array data (e.g., images) extracted from (Stream) Resource
+and (Stream) Datum documents are also stored in the `tiled_catalog` PostgreSQL
+database.
 
 Data from Event documents is generally stored in tables in the `tiled_storage`
 database, but there are some exceptions.
