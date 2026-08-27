@@ -111,6 +111,7 @@ filterwarnings = [
   # this is a third-party issue not in our control.
   "ignore:SelectableGroups dict interface is deprecated:DeprecationWarning",
   "ignore:Using `httpx` with `starlette.testclient` is deprecated:starlette.exceptions.StarletteDeprecationWarning",
+  "ignore::DeprecationWarning",
 ]
 log_level = "INFO"
 testpaths = [

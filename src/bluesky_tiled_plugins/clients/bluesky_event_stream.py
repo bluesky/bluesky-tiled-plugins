@@ -30,7 +30,7 @@ class BlueskyEventStream(Container):
         return _cls(context, item=item, structure_clients=structure_clients, **kwargs)
 
     @staticmethod
-    def _is_sql(item):
+    def _is_sql(item) -> bool:
         for spec in item["attributes"]["specs"]:
             if spec["name"] == "BlueskyEventStream":
                 if spec["version"].startswith("3."):
@@ -45,7 +45,7 @@ class BlueskyEventStreamV2Mongo(BlueskyEventStream):
     This adds for bluesky-specific conveniences to the standard client Container.
     """
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         stream_name = self.metadata.get("stream_name") or self.item["id"]
         return f"<BlueskyEventStream {set(self)!r} stream_name={stream_name!r}>"
 
