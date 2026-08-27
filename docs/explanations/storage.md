@@ -12,7 +12,7 @@ database, but there are some exceptions.
 
 Bluesky permits array data to be placed directly into Event documents. This is
 intended for small arrays, such as bounding boxes and configuration settings,
-but there is no hard limit on Bluesky will accept. When TiledWriter receives
+but there is no hard limit on what Bluesky will accept. When TiledWriter receives
 Event documents that are any of the following:
 
 - large
