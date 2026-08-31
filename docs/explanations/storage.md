@@ -3,8 +3,8 @@
 The metadata extracted from Run Start, Event Descriptor, and Run Stop documents
 is stored in the `tiled_catalog` PostgreSQL database.
 
-Pointers to large array data (e.g., images) extracted from (Stream) Resource
-and (Stream) Datum documents are also stored in the `tiled_catalog` PostgreSQL
+Pointers to large array data (e.g., images) extracted from (Stream) Resource and
+(Stream) Datum documents are also stored in the `tiled_catalog` PostgreSQL
 database.
 
 Data from Event documents is generally stored in tables in the `tiled_storage`
@@ -12,8 +12,8 @@ database, but there are some exceptions.
 
 Bluesky permits array data to be placed directly into Event documents. This is
 intended for small arrays, such as bounding boxes and configuration settings,
-but there is no hard limit on what Bluesky will accept. When TiledWriter receives
-Event documents that are any of the following:
+but there is no hard limit on what Bluesky will accept. When TiledWriter
+receives Event documents that are any of the following:
 
 - large
 - N-dimensional (i.e., more than 1-dimensional)
