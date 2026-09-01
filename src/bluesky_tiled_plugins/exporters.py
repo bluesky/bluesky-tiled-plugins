@@ -13,6 +13,22 @@ _DESCRIPTOR_VALIDATOR = schema_validators[DocumentNames.descriptor]
 _NON_DESCRIPTOR_KEYS = frozenset({"_config_updates", "stream_name"})
 
 
+def _to_builtin(value):
+    """Recursively convert a table cell into JSON-serializable builtins.
+
+    A cell read back from the internal table may be a numpy array or,
+    for an nD array column, a numpy object array whose elements are
+    themselves numpy arrays. Calling `tolist()` only on the outer object
+    leaves the inner arrays untouched, so recurse into the resulting
+    lists to convert every level.
+    """
+    if hasattr(value, "tolist"):
+        value = value.tolist()
+    if isinstance(value, list):
+        return [_to_builtin(v) for v in value]
+    return value
+
+
 def build_descriptor_docs(raw_metadata, stream_name, run_start_uid=None):
     """Reconstruct the sequence of `EventDescriptor` documents for a
     single stream from the raw metadata dictionary cached on its Tiled node.
@@ -190,9 +206,7 @@ async def json_seq_exporter(mimetype, adapter, metadata, filter_for_access):
                 data = row_data.setdefault(sn, {})
                 ts = row_ts.setdefault(sn, {})
                 for k in keys:
-                    data[k] = (
-                        row[k].tolist() if hasattr(row[k], "__array__") else row[k]
-                    )
+                    data[k] = _to_builtin(row[k])
                     ts[k] = row[f"ts_{k}"]
                 for k in ts_keys:
                     table_ts[sn][k] = row[f"ts_{k}"]

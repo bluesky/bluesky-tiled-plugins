@@ -118,3 +118,72 @@ def test_export_roundtrip_preserves_structure(
         assert set(original[stream].keys()) == set(roundtripped[stream].keys())
         for key in original[stream].keys():
             assert original[stream][key].shape == roundtripped[stream][key].shape
+
+
+def test_export_nd_numeric_tabular_array(client):
+    """A 2D numeric array small enough to stay in the internal (SQL) table
+    is read back from the table as a numpy object array whose elements are
+    themselves numpy arrays. The JSON-Seq exporter must recursively convert
+    it to nested builtin lists; otherwise it raises `Object of type ndarray
+    is not JSON serializable` while serializing the reconstructed event.
+    """
+    uid = uuid.uuid4().hex
+    desc_uid = uuid.uuid4().hex
+    img = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
+    docs = [
+        ("start", {"uid": uid, "time": 0.0}),
+        (
+            "descriptor",
+            {
+                "uid": desc_uid,
+                "run_start": uid,
+                "time": 0.0,
+                "name": "primary",
+                "data_keys": {
+                    "img": {
+                        "source": "sim",
+                        "dtype": "array",
+                        "dtype_numpy": "<f8",
+                        "shape": [2, 3],
+                        "object_name": "det",
+                    },
+                },
+                "object_keys": {"det": ["img"]},
+            },
+        ),
+        (
+            "event",
+            {
+                "uid": uuid.uuid4().hex,
+                "descriptor": desc_uid,
+                "time": 0.0,
+                "seq_num": 1,
+                "data": {"img": img},
+                "timestamps": {"img": 0.0},
+                "filled": {},
+            },
+        ),
+        (
+            "stop",
+            {
+                "uid": uuid.uuid4().hex,
+                "run_start": uid,
+                "time": 1.0,
+                "exit_status": "success",
+                "num_events": {"primary": 1},
+            },
+        ),
+    ]
+
+    # The default max_array_size keeps the 2x3 array in the tabular store
+    # rather than writing it as a separate zarr node.
+    tw = TiledWriter(client)
+    for name, doc in docs:
+        tw(name=name, doc=doc)
+
+    run = client[uid]
+    assert "img" not in run["primary"].base
+
+    events = [doc for name, doc in run.v3.documents() if name == "event"]
+    assert len(events) == 1
+    assert events[0]["data"]["img"] == img
