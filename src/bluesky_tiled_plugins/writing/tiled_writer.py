@@ -688,6 +688,9 @@ class _RunWriter(DocumentRouter):
         self._int_array_keys: dict[str, set[str]] = defaultdict(set)
         # data_keys with array data of inconsistent length, by desc_name
         self._int_ragged_array_keys: dict[str, set[str]] = defaultdict(set)
+        # Mapping of dimension size -> shared dimension name for internal arrays,
+        # by desc_name, so equal-sized dimensions align in the xarray Dataset.
+        self._int_dims_names: dict[str, dict[int, str]] = defaultdict(dict)
         self._batch_size: int = batch_size
         self._max_array_size: int = max_array_size  # Max array size in SQL
         self._validate: bool = validate
@@ -695,6 +698,32 @@ class _RunWriter(DocumentRouter):
         self.data_keys: dict[str, DataKey] = {}
         self.access_tags: list[str] | None = None
         self.notes: list[str] = []
+
+    def _internal_dims(
+        self, desc_name: str, shape: tuple[int | None, ...]
+    ) -> tuple[str, ...]:
+        """Return dimension names for an internal array.
+
+        The leading (event) dimension is always `time`. Each subsequent
+        dimension of a known size is named after that size, reusing a name for
+        every recurrence of the size across all internal arrays in the stream,
+        so equal-sized dimensions align in the xarray Dataset while different
+        sizes stay distinct; these use a `dim_int_{i}` prefix. A dimension of
+        unknown size (`None`, i.e. a ragged/variable-length dimension) can not
+        be shared and is named `dim_rgd_{axis}` per array by its axis position.
+        Both prefixes distinguish internal dimensions from external (regular)
+        dimension names.
+        """
+        names = self._int_dims_names[desc_name]
+        dims = ["time"]
+        for axis, size in enumerate(shape[1:], start=1):
+            if size is None:
+                dims.append(f"dim_rgd_{axis}")
+                continue
+            if size not in names:
+                names[size] = f"dim_int_{len(names) + 1}"
+            dims.append(names[size])
+        return tuple(dims)
 
     def _write_internal_data(
         self, data_cache: list[dict[str, Any]], desc_node: Container
@@ -705,6 +734,10 @@ class _RunWriter(DocumentRouter):
         # 1. Write internal array data, if any; remove it from the tabular data
         for key in self._int_array_keys[desc_name]:
             arr_lst = [row.pop(key) for row in data_cache if key in row]
+            if not arr_lst:
+                # No data received for this key in the current batch (e.g. it was
+                # supplied out-of-band as an external stream resource); nothing to write.
+                continue
 
             # Pad the arrays with NaNs to make them the same length if necessary
             min_len, max_len = (
@@ -723,25 +756,25 @@ class _RunWriter(DocumentRouter):
             # Create a new "internal" array data node or update the existing one
             if not (arr_client := self._internal_arrays.get(f"{desc_name}/{key}")):
                 metadata = truncate_json_overflow(self.data_keys.get(key, {}))
+                dtype = metadata.get("dtype_numpy") or None
+                if dtype is not None and numpy.dtype(dtype).kind == "O":
+                    # Object dtype: let numpy infer a dtype (e.g. fixed-width string) from the data.
+                    dtype = None
                 try:
-                    array = numpy.array(
-                        arr_lst, dtype=metadata.get("dtype_numpy", None)
-                    )
+                    array = numpy.array(arr_lst, dtype=dtype)
                 except ValueError as e:
                     logger.error(
                         f"Error creating numpy array for key '{key}' in stream '{desc_name}': {e}."
                     )
                     array = numpy.array(arr_lst)
-                    metadata["dtype_numpy"] = str(array.dtype)
-                    logger.warning(
-                        f"Falling back to default dtype '{metadata['dtype_numpy']}'"
-                    )
+                    logger.warning(f"Falling back to default dtype '{array.dtype}'")
+                metadata["dtype_numpy"] = str(array.dtype)
 
                 arr_client = desc_node.write_array(
                     array,
                     key=key,
                     metadata=metadata,
-                    dims=("time", "dim_1"),  # Always 2D
+                    dims=self._internal_dims(desc_name, array.shape),
                     access_tags=self.access_tags,
                 )
 
@@ -771,7 +804,7 @@ class _RunWriter(DocumentRouter):
                     array,
                     key=key,
                     metadata=metadata,
-                    dims=("time", *[f"dim_{i}" for i in range(1, len(shape))]),
+                    dims=self._internal_dims(desc_name, shape),
                     access_tags=self.access_tags,
                 )
                 self._internal_arrays[f"{desc_name}/{key}"] = arr_client
@@ -1018,6 +1051,12 @@ class _RunWriter(DocumentRouter):
                     if None in val.get("shape", ()):
                         self._int_ragged_array_keys[desc_name].add(key)
                     elif 0 <= self._max_array_size < math.prod(val.get("shape", ())):
+                        self._int_array_keys[desc_name].add(key)
+                    elif (dtype_numpy := val.get("dtype_numpy")) and numpy.dtype(
+                        dtype_numpy
+                    ).kind in {"U", "S", "O"}:
+                        # String/bytes/object arrays can not be stored in SQL in a
+                        # readable form, so always write them as zarr arrays.
                         self._int_array_keys[desc_name].add(key)
         else:
             # Rare Case: This new descriptor likely updates stream configs mid-experiment

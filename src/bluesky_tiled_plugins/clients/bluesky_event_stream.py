@@ -294,7 +294,10 @@ class CompositeSubsetClient(CompositeClient):
     def read(self, variables=None, dim0=None):
         variables = set(self._keys).intersection(variables or self._keys)
 
-        return super().read(variables, dim0=dim0)
+        # Default the leading dimension to "time" so tabular columns align with
+        # the internal (zarr) arrays, whose explicit dims already start with
+        # "time"; a caller-supplied dim0 still takes precedence.
+        return super().read(variables, dim0=dim0 or "time")
 
 
 class VirtualContainer(DictView):
@@ -372,7 +375,10 @@ class BlueskyEventStreamV3(BlueskyEventStream, CompositeClient):
         if TIMESTAMPS in variables:
             variables = self._ts_keys.union(variables) - {TIMESTAMPS}
 
-        return super().read(variables=variables, dim0=dim0)
+        # Default the leading dimension to "time" so tabular columns align with
+        # the internal (zarr) arrays, whose explicit dims already start with
+        # "time"; a caller-supplied dim0 still takes precedence.
+        return super().read(variables=variables, dim0=dim0 or "time")
 
     @functools.cached_property
     def descriptors(self):
