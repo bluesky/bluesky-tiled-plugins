@@ -1,4 +1,5 @@
 import collections.abc
+import math
 import re
 from urllib.parse import urlparse
 from tiled.utils import path_from_uri
@@ -8,6 +9,7 @@ __all__ = [
     "truncate_json_overflow",
     "compile_template",
     "list_summands",
+    "split_table",
 ]
 
 # If only tiled['client'] is installed we can not use the `size_from_uri` utility
@@ -119,3 +121,13 @@ def list_summands(A: int, b: int, repeat: int = 1) -> tuple[int, ...]:
     # e.g. list_summands(13, 3) = [3, 3, 3, 3, 1]
     # if `repeat = n`, n > 1, copy and repeat the entire result n times
     return tuple([b] * (A // b) + ([A % b] if A % b > 0 else [])) * repeat or (0,)
+
+
+def split_table(table, max_columns):
+    """Split a pyarrow Table into multiple tables with at most `max_columns` columns each."""
+    columns = sorted(table.column_names)
+    ncols = len(columns)
+    part_size = math.ceil(ncols / math.ceil(ncols / max_columns))
+
+    for i in range(0, ncols, part_size):
+        yield table.select(columns[i : i + part_size])
