@@ -733,7 +733,8 @@ class _RunWriter(DocumentRouter):
         desc_name = desc_node.item["id"]  # Name of the descriptor (stream)
         # 1. Write internal array data, if any; remove it from the tabular data
         for key in self._int_array_keys[desc_name]:
-            arr_lst = [row.pop(key) for row in data_cache if key in row]
+            rows_with_key = [row for row in data_cache if key in row]
+            arr_lst = [row.pop(key) for row in rows_with_key]
             if not arr_lst:
                 # No data received for this key in the current batch (e.g. it was
                 # supplied out-of-band as an external stream resource); nothing to write.
@@ -753,23 +754,46 @@ class _RunWriter(DocumentRouter):
                 logger.warning(msg)
                 self.notes.append(msg)
 
-            # Create a new "internal" array data node or update the existing one
-            if not (arr_client := self._internal_arrays.get(f"{desc_name}/{key}")):
-                metadata = truncate_json_overflow(self.data_keys.get(key, {}))
-                dtype = metadata.get("dtype_numpy") or None
-                if dtype is not None and numpy.dtype(dtype).kind == "O":
-                    # Object dtype: let numpy infer a dtype (e.g. fixed-width string) from the data.
-                    dtype = None
-                try:
-                    array = numpy.array(arr_lst, dtype=dtype)
-                except ValueError as e:
-                    logger.error(
-                        f"Error creating numpy array for key '{key}' in stream '{desc_name}': {e}."
-                    )
-                    array = numpy.array(arr_lst)
-                    logger.warning(f"Falling back to default dtype '{array.dtype}'")
-                metadata["dtype_numpy"] = str(array.dtype)
+            # Build the numpy array for this batch. For an existing node reuse its
+            # dtype; otherwise take the declared dtype, letting numpy infer it
+            # (e.g. a fixed-width string dtype) when the declared dtype is `Object`.
+            arr_client = self._internal_arrays.get(f"{desc_name}/{key}")
+            metadata = truncate_json_overflow(self.data_keys.get(key, {}))
+            dtype = (
+                arr_client.dtype
+                if arr_client is not None
+                else (metadata.get("dtype_numpy") or None)
+            )
+            if dtype is not None and numpy.dtype(dtype).kind == "O":
+                dtype = None
+            try:
+                array = numpy.array(arr_lst, dtype=dtype)
+            except ValueError as e:
+                logger.error(
+                    f"Error creating numpy array for key '{key}' in stream '{desc_name}': {e}."
+                )
+                array = numpy.array(arr_lst)
+                logger.warning(f"Falling back to default dtype '{array.dtype}'")
 
+            # A zero-length dimension can not be stored as a zarr array because
+            # zarr can not chunk a zero-length dimension. Rather than fail the write
+            # for the whole run, keep the values in the tabular data so they are stored in the
+            # SQL table with their original dtype.
+            if 0 in array.shape:
+                for row, val in zip(rows_with_key, arr_lst):
+                    row[key] = val
+                msg = (
+                    f"Internal array data for key '{key}' in stream '{desc_name}' has a "
+                    f"zero-length dimension (shape {array.shape}) and can not be stored "
+                    f"as a zarr array; it is stored in the internal table instead."
+                )
+                logger.warning(msg)
+                self.notes.append(msg)
+                continue
+
+            # Create a new "internal" array data node or update the existing one
+            if arr_client is None:
+                metadata["dtype_numpy"] = str(array.dtype)
                 arr_client = desc_node.write_array(
                     array,
                     key=key,
@@ -784,7 +808,7 @@ class _RunWriter(DocumentRouter):
                 )
             else:
                 arr_client.patch(
-                    numpy.array(arr_lst, dtype=arr_client.dtype),
+                    array,
                     offset=arr_client.shape[:1],
                     extend=True,
                 )

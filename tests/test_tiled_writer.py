@@ -804,19 +804,7 @@ def test_json_backup(client, tmpdir, monkeypatch):
 @pytest.mark.parametrize(
     "max_array_size, expected_scheme",
     [
-        pytest.param(
-            0,
-            "file",
-            marks=pytest.mark.xfail(
-                reason=(
-                    "internal_events.json has a data_key with a zero-length dimension; "
-                    "most zarr versions reject chunk edges of 0. Passes on zarr <3.2 "
-                    "and >=3.1; fails on zarr 2.x and zarr >=3.2."
-                ),
-                raises=(ZeroDivisionError, ValueError),
-                strict=False,
-            ),
-        ),
+        (0, "file"),
         (4, "file"),
         (16, "duckdb"),
         (-1, "duckdb"),
@@ -853,6 +841,14 @@ def test_internal_arrays_written_as_zarr(client, max_array_size, expected_scheme
     assert str_arr.read()[0].tolist() == ["foo", "bar", "baz"]
     assert "str_arr" not in internal_table.columns
     assert urlparse(str_arr.data_sources()[0].assets[0].data_uri).scheme == "file"
+
+    # The "empty" data_key carries a zero-length array in every event. When
+    # classified as an internal (zarr) array (max_array_size == 0) it holds no
+    # data and can not be chunked by zarr, so it falls back to the tabular
+    # store instead of being written as a separate zarr node.
+    if max_array_size == 0:
+        assert "empty" not in run["primary"].base
+        assert "empty" in internal_table.columns
 
     # An nD per-event array (2x3 strings) is stored as a 3D zarr array and read
     # back with its full shape.
