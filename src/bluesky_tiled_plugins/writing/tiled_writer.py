@@ -46,7 +46,7 @@ from tiled.structures.core import Spec
 from tiled.utils import ensure_uri, safe_json_dump
 from packaging.version import Version
 
-from ..utils import truncate_json_overflow
+from ..utils import truncate_json_overflow, split_table
 from ._dispatcher import Dispatcher
 from ._json_writer import JSONLinesWriter, JSONDictWriter
 from .validator import ValidationException
@@ -64,6 +64,9 @@ BATCH_SIZE = 10000
 # Maximum size of internal arrays from Event docs to write to tabular (SQL) storage; larger arrays will be written
 # as zarr. Set to 0 to write all internal arrays as zarr, and -1 to write all internal arrays to tabular storage.
 MAX_ARRAY_SIZE = 16
+
+# Maximum number of columns in a single table; larger tables will be split into multiple tables
+MAX_TABLE_COLUMNS = 1024
 
 # Disallow using reserved words as data_keys identifiers
 # Related: https://github.com/bluesky/event-model/pull/223
@@ -785,33 +788,41 @@ class _RunWriter(DocumentRouter):
         if not (table := pyarrow.Table.from_pylist(data_cache)):
             return  # Nothing to write
 
-        if not (df_client := self._internal_tables.get(desc_name)):
-            # Create a new "internal" data node and write the initial piece of data
-            metadata = {
-                k: v for k, v in self.data_keys.items() if k in table.column_names
-            }
-            metadata = truncate_json_overflow(metadata)
-            # Replace any nulls in the schema with string type
-            schema = copy.copy(table.schema)
-            for i, field in enumerate(table.schema):
-                if pyarrow.types.is_null(field.type):
-                    schema = schema.set(i, field.with_type(pyarrow.string()))
-                elif pyarrow.types.is_list(field.type) and pyarrow.types.is_null(
-                    field.type.value_type
-                ):
-                    schema = schema.set(
-                        i, field.with_type(pyarrow.list_(pyarrow.string()))
-                    )
-            # Initialize the table and keep a reference to the client
-            df_client = desc_node.create_appendable_table(
-                schema=schema,
-                key="internal",
-                metadata=metadata,
-                access_tags=self.access_tags,
-            )
-            self._internal_tables[desc_name] = df_client
+        suffix_and_tables = [("", table)]
+        if table.num_columns > MAX_TABLE_COLUMNS:
+            suffix_and_tables = [
+                (f"_{i}", tab)
+                for i, tab in enumerate(split_table(table, MAX_TABLE_COLUMNS))
+            ]
 
-        df_client.append_partition(0, table)
+        for suffix, table in suffix_and_tables:
+            if not (df_client := self._internal_tables.get(f"{desc_name}{suffix}")):
+                # Create a new "internal" data node and write the initial piece of data
+                metadata = {
+                    k: v for k, v in self.data_keys.items() if k in table.column_names
+                }
+                metadata = truncate_json_overflow(metadata)
+                # Replace any nulls in the schema with string type
+                schema = copy.copy(table.schema)
+                for i, field in enumerate(table.schema):
+                    if pyarrow.types.is_null(field.type):
+                        schema = schema.set(i, field.with_type(pyarrow.string()))
+                    elif pyarrow.types.is_list(field.type) and pyarrow.types.is_null(
+                        field.type.value_type
+                    ):
+                        schema = schema.set(
+                            i, field.with_type(pyarrow.list_(pyarrow.string()))
+                        )
+                # Initialize the table and keep a reference to the client
+                df_client = desc_node.create_appendable_table(
+                    schema=schema,
+                    key=f"internal{suffix}",
+                    metadata=metadata,
+                    access_tags=self.access_tags,
+                )
+                self._internal_tables[f"{desc_name}{suffix}"] = df_client
+
+            df_client.append_partition(0, table)
 
     def _update_consolidator(self, doc: StreamDatum):
         """Register the external data from StreamDatum in the Consolidator"""

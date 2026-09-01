@@ -1,5 +1,6 @@
 import json
 import os
+import uuid
 from collections.abc import Iterator
 from typing import cast
 from urllib.parse import parse_qs, urlparse
@@ -858,6 +859,93 @@ def test_internal_arrays_written_as_zarr(client, max_array_size, expected_scheme
         assert "long" not in run["primary"].base
         assert "long" in internal_table.columns
         assert run["primary"]["long"].data_sources() is None
+
+
+def test_large_internal_table_split_into_multiple_nodes(client, monkeypatch):
+    """A stream whose internal table has more columns than `MAX_TABLE_COLUMNS`
+    is stored as several `internal_{i}` nodes, each holding a disjoint subset
+    of the columns; all columns remain readable through the stream.
+    """
+    from bluesky_tiled_plugins.writing import tiled_writer as tw_mod
+
+    monkeypatch.setattr(tw_mod, "MAX_TABLE_COLUMNS", 4)
+
+    ncols = 10
+    keys = [f"col_{i:03d}" for i in range(ncols)]
+    uid = uuid.uuid4().hex
+    desc_uid = uuid.uuid4().hex
+    docs = [
+        ("start", {"uid": uid, "time": 0.0}),
+        (
+            "descriptor",
+            {
+                "uid": desc_uid,
+                "run_start": uid,
+                "time": 0.0,
+                "name": "primary",
+                "data_keys": {
+                    k: {
+                        "source": "sim",
+                        "dtype": "number",
+                        "shape": [],
+                        "object_name": "det",
+                    }
+                    for k in keys
+                },
+                "object_keys": {"det": keys},
+            },
+        ),
+        (
+            "event",
+            {
+                "uid": uuid.uuid4().hex,
+                "descriptor": desc_uid,
+                "time": 0.0,
+                "seq_num": 1,
+                "data": {k: float(i) for i, k in enumerate(keys)},
+                "timestamps": {k: 0.0 for k in keys},
+                "filled": {},
+            },
+        ),
+        (
+            "stop",
+            {
+                "uid": uuid.uuid4().hex,
+                "run_start": uid,
+                "time": 1.0,
+                "exit_status": "success",
+                "num_events": {"primary": 1},
+            },
+        ),
+    ]
+
+    tw = TiledWriter(client)
+    for name, doc in docs:
+        tw(name=name, doc=doc)
+
+    run = client[uid]
+    base = run["primary"].base
+
+    # The internal table (data columns plus their `ts_` timestamps and
+    # `seq_num`/`time`) exceeds MAX_TABLE_COLUMNS and is split into a
+    # contiguously numbered set of `internal_{i}` nodes.
+    internal_nodes = sorted(k for k in base.keys() if k.startswith("internal"))
+    assert len(internal_nodes) > 1
+    assert internal_nodes == [f"internal_{i}" for i in range(len(internal_nodes))]
+
+    # Each part holds at most MAX_TABLE_COLUMNS columns, and every data key is
+    # stored in exactly one part.
+    for node_key in internal_nodes:
+        assert len(base[node_key].columns) <= 4
+    stored = [
+        c for node_key in internal_nodes for c in base[node_key].columns if c in keys
+    ]
+    assert sorted(stored) == keys
+
+    # All columns are still readable through the assembled stream.
+    dataset = run["primary"].read()
+    for i, k in enumerate(keys):
+        assert float(dataset[k].values[0]) == float(i)
 
 
 @pytest.mark.parametrize("corrupt_uri", [False, True])
