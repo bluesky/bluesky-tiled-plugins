@@ -24,6 +24,7 @@ from event_model.documents.event_descriptor import DataKey
 from event_model.documents.stream_datum import StreamDatum
 from event_model.documents.stream_resource import StreamResource
 from tiled.client import record_history
+from tiled.client.utils import ClientError
 from tiled.utils import safe_json_dump
 from examples.render import render_templated_documents
 
@@ -473,8 +474,11 @@ def test_validate_external_data(client, external_assets_folder, error_type, vali
     # Try reading the imported data
     run = client[uid]
     if not validate and not error_type == "chunks":
-        with pytest.raises(ValueError):
-            assert run["primary"].read() is not None
+        # An inconsistent array cannot be read back. Depending on the Tiled
+        # version, the mismatch either fails to reshape client-side
+        # (`ValueError`) or is rejected by the server (`ClientError`).
+        with pytest.raises((ValueError, ClientError)):
+            run["primary"].read()
     else:
         assert run["primary"].read() is not None
         assert run["primary"]["det-key2"].read().shape == (3, 13, 17)
