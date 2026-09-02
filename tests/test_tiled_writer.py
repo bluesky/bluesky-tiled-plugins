@@ -837,8 +837,13 @@ def test_internal_arrays_written_as_zarr(client, max_array_size, expected_scheme
     # String arrays are always written as zarr, regardless of their size, because
     # they can not be stored in the SQL table in a readable form.
     str_arr = run["primary"]["str_arr"]
+    str_arr_expected = np.array(
+        [["foo", "bar", "baz"], ["qux", "quux", "corge"], ["grault", "garply", "waldo"]]
+    )
     assert str_arr.shape == (3, 3)
-    assert str_arr.read()[0].tolist() == ["foo", "bar", "baz"]
+    assert str_arr.read().dtype == np.dtype("<U6")
+    assert str_arr.read().shape == (3, 3)
+    assert np.array_equal(str_arr.read(), str_arr_expected)
     assert "str_arr" not in internal_table.columns
     assert urlparse(str_arr.data_sources()[0].assets[0].data_uri).scheme == "file"
 
