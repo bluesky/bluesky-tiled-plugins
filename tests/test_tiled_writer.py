@@ -437,6 +437,9 @@ def test_data_source_patching(
         assert actual_patch_offsets == expected_patch_offsets
 
 
+@pytest.mark.filterwarnings(
+    "ignore:The .validate. argument of TiledWriter is deprecated:DeprecationWarning"
+)
 @pytest.mark.parametrize("error_type", ["shape", "chunks", "dtype", "dims"])
 @pytest.mark.parametrize("validate", [True, False])
 def test_validate_external_data(client, external_assets_folder, error_type, validate):
@@ -493,6 +496,9 @@ def test_validate_external_data(client, external_assets_folder, error_type, vali
     ),
 )
 @pytest.mark.filterwarnings("ignore::UserWarning")
+@pytest.mark.filterwarnings(
+    "ignore:The .validate. argument of TiledWriter is deprecated:DeprecationWarning"
+)
 def test_ignore_validation_errors(client, external_assets_folder, ignore_errors):
     tw = TiledWriter(client, validate=True, ignore_errors=ignore_errors)
 
@@ -589,6 +595,9 @@ def test_slice_and_squeeze(client, external_assets_folder, squeeze):
     assert client[uid]["primary"].read() is not None
 
 
+@pytest.mark.filterwarnings(
+    "ignore:The .validate. argument of TiledWriter is deprecated:DeprecationWarning"
+)
 @pytest.mark.parametrize("multiplier_key", ["multiplier", "frame_per_point"])
 @pytest.mark.parametrize("validate", [True, False])
 def test_legacy_with_multiplier_parameter(
@@ -1001,6 +1010,9 @@ def test_large_internal_table_split_into_multiple_nodes(client, monkeypatch):
 
 @pytest.mark.parametrize("corrupt_uri", [False, True])
 @pytest.mark.filterwarnings("ignore::UserWarning")
+@pytest.mark.filterwarnings(
+    "ignore:The .validate. argument of TiledWriter is deprecated:DeprecationWarning"
+)
 def test_bytes_roundtrip(client, external_assets_folder, corrupt_uri):
     """End-to-end registration of `bytes` data sources via `TiledWriter`.
 
