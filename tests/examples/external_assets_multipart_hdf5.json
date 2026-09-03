@@ -21,10 +21,10 @@
         }
       },
       "data_keys": {
-        "det-key2": {
+        "det-key3": {
           "source": "file",
           "dtype": "array",
-          "dtype_numpy": "<i8",
+          "dtype_numpy": "<f8",
           "shape": [1, 13, 17],
           "external": "STREAM:",
           "object_name": "det"
@@ -32,7 +32,7 @@
       },
       "name": "primary",
       "object_keys": {
-        "det": ["det-key2"]
+        "det": ["det-key3"]
       },
       "run_start": "{{ uuid }}-9724b2201fe7",
       "time": 1745500521.79327,
@@ -44,25 +44,27 @@
     "name": "resource",
     "doc": {
       "resource_kwargs": {
-        "chunk_shape": [100, 13, 17],
+        "chunk_shape": [1, 13, 17],
+        "template": "%s%s_%6.6d.h5",
+        "filename": "/dataset_part",
         "frame_per_point": 1,
-        "join_method": "concat"
+        "join_method": "concat",
+        "dataset": "/entry/data/data"
       },
       "root": "{{ root_path }}",
-      "resource_path": "/dataset.h5",
-      "spec": "AD_HDF5_SWMR_STREAM",
-      "uid": "det-key2-uid"
+      "resource_path": "/multipart_hdf5/",
+      "spec": "AD_HDF5",
+      "uid": "det-key3-uid"
     }
   },
   {
     "name": "datum",
     "doc": {
-      "resource": "det-key2-uid",
+      "resource": "det-key3-uid",
       "datum_kwargs": {
-        "dataset": "/entry/data/data_2",
-        "frame": 0
+        "point_number": 0
       },
-      "datum_id": "det-key2-uid/0"
+      "datum_id": "det-key3-uid/0"
     }
   },
   {
@@ -71,10 +73,10 @@
       "uid": "{{ uuid }}-418d3390e5b8/0",
       "time": 1745500522.79327,
       "data": {
-        "det-key2": "det-key2-uid/0"
+        "det-key3": "det-key3-uid/0"
       },
       "timestamps": {
-        "det-key2": 1745500522.79327
+        "det-key3": 1745500522.79327
       },
       "seq_num": 1,
       "filled": {},
@@ -84,12 +86,11 @@
   {
     "name": "datum",
     "doc": {
-      "resource": "det-key2-uid",
+      "resource": "det-key3-uid",
       "datum_kwargs": {
-        "dataset": "/entry/data/data_2",
-        "frame": 1
+        "point_number": 1
       },
-      "datum_id": "det-key2-uid/1"
+      "datum_id": "det-key3-uid/1"
     }
   },
   {
@@ -98,10 +99,10 @@
       "uid": "{{ uuid }}-418d3390e5b8/1",
       "time": 1745500523.79327,
       "data": {
-        "det-key2": "det-key2-uid/1"
+        "det-key3": "det-key3-uid/1"
       },
       "timestamps": {
-        "det-key2": 1745500523.79327
+        "det-key3": 1745500523.79327
       },
       "seq_num": 2,
       "filled": {},
@@ -111,24 +112,23 @@
   {
     "name": "datum",
     "doc": {
-      "resource": "det-key2-uid",
+      "resource": "det-key3-uid",
       "datum_kwargs": {
-        "dataset": "/entry/data/data_2",
-        "frame": 2
+        "point_number": 2
       },
-      "datum_id": "det-key2-uid/2"
+      "datum_id": "det-key3-uid/2"
     }
   },
   {
     "name": "event",
     "doc": {
       "uid": "{{ uuid }}-418d3390e5b8/2",
-      "time": 1745500524.79327,
+      "time": 1745500522.79327,
       "data": {
-        "det-key2": "det-key2-uid/2"
+        "det-key3": "det-key3-uid/2"
       },
       "timestamps": {
-        "det-key2": 1745500524.79327
+        "det-key3": 1745500522.79327
       },
       "seq_num": 3,
       "filled": {},
@@ -139,7 +139,7 @@
     "name": "stop",
     "doc": {
       "uid": "{{ uuid }}-fe2748f474de",
-      "time": 1745500526.771699,
+      "time": 1745500525.771699,
       "run_start": "{{ uuid }}-9724b2201fe7",
       "exit_status": "success",
       "reason": "",

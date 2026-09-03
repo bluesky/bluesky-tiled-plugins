@@ -1,16 +1,16 @@
 import collections
 import dataclasses
-import os
-import re
 import warnings
-from typing import Literal, cast
+from typing import Literal, cast, Optional
 
 import numpy as np
 from event_model.documents import EventDescriptor, StreamDatum, StreamResource
 from tiled.mimetypes import DEFAULT_ADAPTERS_BY_MIMETYPE
 from tiled.structures.array import ArrayStructure, BuiltinDtype, StructDtype
+from tiled.structures.bytes import BytesStructure
 from tiled.structures.core import StructureFamily
 from tiled.structures.data_source import Asset, DataSource, Management
+from ..utils import compile_template, list_summands, size_from_uri
 
 
 @dataclasses.dataclass
@@ -88,6 +88,8 @@ class ConsolidatorBase:
         a method to join the data; if "stack", the resulting consolidated dataset is produced by joining all datums
         along a new dimension added on the left, e.g. a stack of tiff images, otherwise -- datums will be appended
         to the end of the existing leftmost dimension, e.g. rows of a table (similarly to concatenation in numpy).
+        Default is "stack". The join_method can be overridden by the StreamResource parameter "join_method".
+        The use of "concat" as the join_method is deprecated and may be removed in a future version.
 
     join_chunks : bool
         if True, the chunking of the resulting dataset will be determined after consolidation, otherwise each part
@@ -96,7 +98,8 @@ class ConsolidatorBase:
     """
 
     supported_mimetypes: set[str] = {"application/octet-stream"}
-    join_method: Literal["stack", "concat"] = "concat"
+    default_asset_role: str = "data_uris"  # Default parameter (role) for the asset(s)
+    join_method: Literal["stack", "concat"] = "stack"
     join_chunks: bool = True
 
     def __init__(self, stream_resource: StreamResource, descriptor: EventDescriptor):
@@ -105,9 +108,37 @@ class ConsolidatorBase:
         self.data_key = stream_resource["data_key"]
         self.uri = stream_resource["uri"]
         self.assets: list[Asset] = [
-            Asset(data_uri=self.uri, is_directory=False, parameter="data_uris", num=0)
+            Asset(
+                data_uri=self.uri,
+                is_directory=False,
+                parameter=self.default_asset_role,
+                num=0,
+            )
         ]
         self._sres_parameters = stream_resource["parameters"]
+        self._indx_offset = 0  # To reset file index counter for each new StreamResource
+
+        # Possibly overwrite the join_method and join_chunks attributes. This must happen before the datum
+        # shape is determined below, since the shape computation depends on the join_method.
+        self.join_method = self._sres_parameters.get("join_method", self.join_method)
+        self.join_chunks = self._sres_parameters.get("join_chunks", self.join_chunks)
+        # Warn when "concat" is explicitly requested via the StreamResource parameters: it is
+        # deprecated in favor of the new default, "stack", and may be removed in a future version.
+        # Consolidators whose intrinsic join_method is "concat" (e.g. CSVConsolidator) are unaffected,
+        # since their concat comes from the class default rather than the StreamResource parameters.
+        if self._sres_parameters.get("join_method") == "concat":
+            warnings.warn(
+                f"Consolidator for {self.mimetype} is using join_method='concat'. "
+                "This join_method is deprecated in favor of the default, 'stack', and may be "
+                "removed in a future version. Please use join_method='stack' instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
+        # Any metadata to be set on the corresponding node in Tiled
+        self.metadata: dict = {}
+        if spec := self._sres_parameters.get("spec"):
+            self.metadata["spec"] = spec
 
         # Find datum shape and machine dtype
         data_desc = descriptor["data_keys"][self.data_key]
@@ -126,6 +157,7 @@ class ConsolidatorBase:
 
         # Check that the datum shape is consistent between the StreamResource and the Descriptor
         if multiplier := self._sres_parameters.get("multiplier"):
+            self.metadata["frame_per_point"] = multiplier
             self.datum_shape = self.datum_shape or (
                 multiplier,
             )  # If datum_shape is not set
@@ -154,13 +186,11 @@ class ConsolidatorBase:
                 f"Chunk size in all dimensions must be at least 1: chunk_shape={self.chunk_shape}."
             )
 
-        # Possibly overwrite the join_method and join_chunks attributes
-        self.join_method = self._sres_parameters.get("join_method", self.join_method)
-        self.join_chunks = self._sres_parameters.get("join_chunks", self.join_chunks)
+        # True chunking, if determined by the validator, is saved in data_source.properties
+        self.orig_chunks: tuple[tuple[int, ...], ...] | None = None
 
-        self._num_rows: int = (
-            0  # Number of rows in the Data Source (all rows, includung skips)
-        )
+        # Number of rows in the Data Source (all rows, includung skips)
+        self._num_rows: int = 0
         self._seqnums_to_indices_map: dict[int, int] = {}
 
         # Set the dimension names if provided
@@ -209,14 +239,6 @@ class ConsolidatorBase:
         chunk_shape parameter; this is the case when `join_method == "stack"` well.
         Chunking along the trailing dimensions is always preserved as in the original (single) array.
         """
-
-        def list_summands(A: int, b: int, repeat: int = 1) -> tuple[int, ...]:
-            # Generate a list with repeated b summing up to A; append the remainder if necessary
-            # e.g. list_summands(13, 3) = [3, 3, 3, 3, 1]
-            # if `repeat = n`, n > 1, copy and repeat the entire result n times
-            return tuple([b] * (A // b) + ([A % b] if A % b > 0 else [])) * repeat or (
-                0,
-            )
 
         # If chunk shape is less than or equal to the total shape dimensions, chunk each specified dimension
         # starting from the leading dimension
@@ -316,6 +338,7 @@ class ConsolidatorBase:
             structure_family=StructureFamily.array,
             structure=self.structure(),
             parameters=self.adapter_parameters(),
+            properties={"chunks": self.orig_chunks} if self.orig_chunks else {},
             management=Management.external,
         )
 
@@ -357,6 +380,34 @@ class ConsolidatorBase:
         ).structure()
         notes = []
 
+        # If this resource has the `frame_per_point`/`multiplier` parameter, the true shape of
+        # the data is expected to be (num_events, multiplier, *rest) and needs to be adjusted
+        if multiplier := self._sres_parameters.get("multiplier"):
+            if structure.shape[0] % multiplier != 0:
+                msg = (
+                    "Expected the leftmost dimension of the data to be divisible by the "
+                    f"`frame_per_point` multiplier of ({multiplier}), but got "
+                    f"shape {structure.shape}. Ignoring the multiplier parameter."
+                )
+            else:
+                orig_shape, self.orig_chunks = structure.shape, structure.chunks
+                structure.shape = (
+                    orig_shape[0] // multiplier,
+                    multiplier,
+                    *orig_shape[1:],
+                )
+                structure.chunks = (
+                    list_summands(structure.shape[0], self.orig_chunks[0][0]),
+                    (multiplier,),
+                    *self.orig_chunks[1:],
+                )
+                msg = (
+                    "Adjusted shape and chunks accorging to the `frame_per_point` "
+                    f"multiplier of ({multiplier}): {orig_shape} -> {structure.shape}"
+                )
+            warnings.warn(msg, stacklevel=2)
+            notes.append(msg)
+
         if self.shape != structure.shape:
             if not fix_errors:
                 raise ValueError(f"Shape mismatch: {self.shape} != {structure.shape}")
@@ -369,9 +420,9 @@ class ConsolidatorBase:
                 # Estimate the number of frames_per_event (multiplier)
                 multiplier = (
                     1
-                    if structure.shape[0] % structure.chunks[0][0]
+                    if structure.shape[0] % (structure.chunks[0][0] or 1)
                     else structure.chunks[0][0]
-                )
+                ) or 1
                 self._num_rows = structure.shape[0] // multiplier
                 self.datum_shape = (multiplier,) + structure.shape[1:]
             notes.append(msg)
@@ -412,7 +463,7 @@ class ConsolidatorBase:
                     ("time",)
                     + old_dims
                     + tuple(
-                        f"dim{i}"
+                        f"dim_{i}"
                         for i in range(len(old_dims) + 1, len(structure.shape))
                     )
                 )
@@ -422,7 +473,12 @@ class ConsolidatorBase:
             warnings.warn(msg, stacklevel=2)
             notes.append(msg)
 
-        assert self.init_adapter() is not None, "Adapter can not be initialized"
+        try:
+            adapter = self.init_adapter()
+        except Exception as e:
+            raise RuntimeError(f"Adapter can not be initialized: {e}") from e
+        if adapter is None:
+            raise RuntimeError("Adapter can not be initialized")
 
         return notes
 
@@ -437,6 +493,121 @@ class ConsolidatorBase:
         return self.init_adapter(adapter_class=adapter_class)
 
 
+class BytesConsolidator:
+    """Consolidator for opaque binary files registered as the `bytes` structure family.
+
+    Unlike `ConsolidatorBase`, this consolidator does not interpret or reshape
+    the data: each StreamDatum yields one or more `Asset`s carrying a file URI,
+    and the corresponding Tiled node is a `bytes` node whose data can be
+    downloaded but not sliced or read as an array.
+    """
+
+    supported_mimetypes: set[str] = {"application/octet-stream"}
+    default_asset_role: str = "data_uris"  # Default parameter (role) for the asset(s)
+
+    def __init__(self, stream_resource: StreamResource, descriptor: EventDescriptor):
+        self.mimetype: str = self.get_supported_mimetype(stream_resource)
+        self.metadata: dict = {}
+        self.template: Optional[str] = None
+        self.data_key: str = stream_resource["data_key"]
+        self.uri: str = stream_resource["uri"]
+        self.assets: list[Asset] = []
+        self._indx_offset: int = 0
+
+        self.update_from_stream_resource(stream_resource)
+
+        # Preserve the originating Bluesky spec (if any) as metadata
+        if spec := stream_resource["parameters"].get("spec"):
+            self.metadata["spec"] = spec
+
+    @classmethod
+    def get_supported_mimetype(cls, sres):
+        if sres["mimetype"] not in cls.supported_mimetypes:
+            raise ValueError(
+                f"A data source of {sres['mimetype']} type can not be handled by {cls.__name__}."
+            )
+        return sres["mimetype"]
+
+    def get_datum_uri(self, indx: int):
+        """Return a full uri for a datum (an individual file) based on its index in the sequence.
+
+        This relies on the `template` parameter passed in the StreamResource, which is a string in the "new"
+        Python formatting style that can be evaluated to a file name using the `.format(indx)` method given an
+        integer index, e.g. "{:05d}.ext".
+
+        The URI and the rendered template are concatenated verbatim, so
+        the caller controls whether a `/` separator is present. Both
+        conventions in the wild are supported: templates that render a
+        bare filename appended to a filename-prefix URI (e.g. `.../uid`
+        + `_{:d}.bin`) and templates that carry their own leading `/`
+        appended to a directory URI (e.g. `.../dir` + `/{filename}.bin`).
+        A single degenerate `//` at the junction (both sides carrying a
+        slash) is collapsed to `/`.
+
+        If template is not set, we assume that the uri is provided directly in the StreamResource document (i.e.
+        a single file case), and return it as is.
+        """
+
+        if not self.template:
+            return self.uri
+        tail = self.template.format(indx - self._indx_offset)
+        if self.uri.endswith("/") and tail.startswith("/"):
+            tail = tail.lstrip("/")
+        return self.uri + tail
+
+    def consume_stream_datum(self, doc: StreamDatum):
+        """Register one Asset per file index in the incoming StreamDatum."""
+        first_file_indx = doc["indices"]["start"]
+        last_file_indx = doc["indices"]["stop"]
+        for indx in range(first_file_indx, last_file_indx):
+            new_asset = Asset(
+                data_uri=self.get_datum_uri(indx),
+                is_directory=False,
+                parameter=self.default_asset_role,
+                num=len(self.assets),
+            )
+            self.assets.append(new_asset)
+
+        return Patch(
+            offset=(first_file_indx,), shape=(last_file_indx - first_file_indx,)
+        )
+
+    def update_from_stream_resource(self, stream_resource: StreamResource):
+        "Update the consolidator with a new StreamResource document"
+
+        self._sres_parameters = stream_resource["parameters"]
+        if template := self._sres_parameters.get("template"):
+            filename = self._sres_parameters.get("filename", "")
+            self.template = compile_template(template, filename)
+
+        # Increment the offset to reset the file index counter to start from "0" for the new StreamResource template
+        self._indx_offset = len(self.assets)
+
+    def validate(self, fix_errors: bool = False) -> list[str]:
+        """Verify each registered asset is reachable; bytes payloads are otherwise opaque."""
+        from .validator import AssetValidationException
+
+        for ast in self.assets:
+            try:
+                size_from_uri(ast.data_uri)
+            except (FileNotFoundError, OSError, ValueError) as e:
+                raise AssetValidationException(
+                    f"Could not determine size of asset {ast.data_uri}: {type(e).__name__}: {e}"
+                ) from e
+        return []
+
+    def get_data_source(self) -> DataSource:
+        return DataSource(
+            mimetype=self.mimetype,
+            assets=self.assets,
+            structure_family=StructureFamily.bytes,
+            structure=BytesStructure(),
+            parameters={},
+            properties={},
+            management=Management.external,
+        )
+
+
 class CSVConsolidator(ConsolidatorBase):
     supported_mimetypes: set[str] = {"text/csv;header=absent"}
     join_method: Literal["stack", "concat"] = "concat"
@@ -444,6 +615,7 @@ class CSVConsolidator(ConsolidatorBase):
 
     def adapter_parameters(self) -> dict:
         allowed_keys = {
+            "assume_missing",
             "comment",
             "delimiter",
             "dtype",
@@ -466,11 +638,20 @@ class CSVConsolidator(ConsolidatorBase):
 class HDF5Consolidator(ConsolidatorBase):
     supported_mimetypes = {"application/x-hdf5"}
 
+    def __new__(cls, stream_resource: StreamResource, descriptor: EventDescriptor):
+        if stream_resource["parameters"].get("template"):
+            return MultipartHDF5Consolidator(stream_resource, descriptor)
+        return super().__new__(cls)
+
     def adapter_parameters(self) -> dict:
         """Parameters to be passed to the HDF5 adapter, a dictionary with the keys:
 
-        dataset: list[str] - a path to the dataset within the hdf5 file represented as list split at `/`
+        dataset: str -- a path to the dataset within the hdf5 file
         swmr: bool -- True to enable the single writer / multiple readers regime
+        locking: Optional[bool] -- True to enable file locking, False to disable,
+            None to auto-detect (default)
+        slice: Optional[tuple[str, ...]] -- a tuple of slice strings to select a subset of the dataset
+        squeeze: bool -- whether to squeeze the dataset after slicing (default False)
         """
         params = {"dataset": self._sres_parameters["dataset"]}
         if slice := self._sres_parameters.get("slice", False):
@@ -499,7 +680,7 @@ class HDF5Consolidator(ConsolidatorBase):
         asset = Asset(
             data_uri=stream_resource["uri"],
             is_directory=False,
-            parameter="data_uris",
+            parameter=self.default_asset_role,
             num=len(self.assets),
         )
         self.assets.append(asset)
@@ -508,64 +689,44 @@ class HDF5Consolidator(ConsolidatorBase):
 class MultipartRelatedConsolidator(ConsolidatorBase):
     def __init__(
         self,
-        permitted_extensions: set[str],
         stream_resource: StreamResource,
         descriptor: EventDescriptor,
     ):
         super().__init__(stream_resource, descriptor)
-        self.permitted_extensions: set[str] = permitted_extensions
         self.assets.clear()  # Assets will be populated based on datum indices
-        self.data_uris: list[str] = []
-        self.chunk_shape = self.chunk_shape or (
-            1,
-        )  # I.e. number of frames per file (tiff, jpeg, etc.)
-        if self.join_method == "concat":
-            assert self.datum_shape[0] % self.chunk_shape[0] == 0, (
-                f"Number of frames per file ({self.chunk_shape[0]}) must divide the total number of frames per "
-                f"datum ({self.datum_shape[0]}): variable-sized files are not allowed."
+        self.chunk_shape = self.chunk_shape or (1,)  # num frames per file
+
+        # Ensure that the number of frames per file divides the number of frames per datum;
+        # if not, silently coerce to a single file per datum but warn.
+        if (self.join_method == "concat") and (
+            self.datum_shape[0] % self.chunk_shape[0] != 0
+        ):
+            warnings.warn(
+                f"Number of frames per file ({self.chunk_shape[0]}) does not divide "
+                f"the total number of frames per datum ({self.datum_shape[0]}); "
+                f"coercing chunk_shape to ({self.datum_shape[0]},) (one file per datum).",
+                stacklevel=2,
             )
+            self.chunk_shape = (self.datum_shape[0],)
 
-        def int_replacer(match):
-            """Normalize filename template
+        self._recompute_files_per_datum()
 
-            Replace an integer format specifier with a new-style format specifier, i.e. convert the template string
-            from "old" to "new" Python style, e.g. "%s%s_%06d.tif" to "filename_{:06d}.tif"
-
-            """
-            flags, width, precision, type_char = match.groups()
-
-            # Handle the flags
-            flag_str = ""
-            if "-" in flags:
-                flag_str = "<"  # Left-align
-            if "+" in flags:
-                flag_str += "+"  # Show positive sign
-            elif " " in flags:
-                flag_str += " "  # Space before positive numbers
-            if "0" in flags:
-                flag_str += "0"  # Zero padding
-
-            # Build width and precision if they exist
-            width_str = width if width else ""
-            precision_str = f".{precision}" if precision else ""
-
-            # Handle cases like "%6.6d", which should be converted to "{:06d}"
-            if precision and width:
-                flag_str = "0"
-                precision_str = ""
-                width_str = str(max(precision, width))
-
-            # Construct the new-style format specifier
-            return f"{{:{flag_str}{width_str}{precision_str}{type_char}}}"
-
-        self.template = (
-            self._sres_parameters["template"]
-            .replace("%s", "{:s}", 1)
-            .replace("%s", "")
-            .replace("{:s}", self._sres_parameters.get("filename", ""), 1)
+        # Compile and set the filename template
+        self.template = compile_template(
+            self._sres_parameters["template"], self._sres_parameters.get("filename", "")
         )
-        self.template = re.sub(
-            r"%([-+#0 ]*)(\d+)?(?:\.(\d+))?([d])", int_replacer, self.template
+
+    def _recompute_files_per_datum(self):
+        """Refresh cached files_per_datum from current sres_parameters and shape.
+
+        Called at __init__ and again on each `update_from_stream_resource` so a
+        subsequent StreamResource with a different `files_per_datum` (or implied
+        by chunking) is honored.
+        """
+        self.files_per_datum = self._sres_parameters.get("files_per_datum") or (
+            self.datum_shape[0] // self.chunk_shape[0]
+            if self.join_method == "concat"
+            else self.metadata.get("frame_per_point", 1)
         )
 
     def get_datum_uri(self, indx: int):
@@ -575,14 +736,23 @@ class MultipartRelatedConsolidator(ConsolidatorBase):
         Python formatting style that can be evaluated to a file name using the `.format(indx)` method given an
         integer index, e.g. "{:05d}.ext".
 
-        If template is not set, we assume that the uri is provided directly in the StreamResource document (i.e.
-        a single file case), and return it as is.
+        The URI and the rendered template are concatenated verbatim, so the caller controls whether a `/` separator
+        is present. Both conventions in the wild are supported: templates that render a bare filename appended
+        to a filename-prefix URI (e.g. `.../uid` + `_{:d}.tif`) and templates that carry their own leading `/`
+        appended to a directory URI (e.g. `.../dir` + `/{filename}.tif`).
+        A single degenerate `//` at the junction (both sides carrying a slash) is collapsed to `/`.
+
+        If template is not set, we assume that the uri is provided directly in the StreamResource document
+        (i.e. a single file case), and return it as is.
         """
 
-        if self.template:
-            assert os.path.splitext(self.template)[1] in self.permitted_extensions
-            return self.uri + self.template.format(indx)
-        return self.uri
+        if not self.template:
+            return self.uri
+
+        tail = self.template.format(indx - self._indx_offset)
+        if self.uri.endswith("/") and tail.startswith("/"):
+            tail = tail.lstrip("/")
+        return self.uri + tail
 
     def consume_stream_datum(self, doc: StreamDatum):
         """Determine the number and names of files from indices of datums and the number of files per datum.
@@ -597,39 +767,44 @@ class MultipartRelatedConsolidator(ConsolidatorBase):
         of the resulting dataset, and hence corresponds to a single file.
         """
 
-        files_per_datum = (
-            self.datum_shape[0] // self.chunk_shape[0]
-            if self.join_method == "concat"
-            else 1
-        )
-        first_file_indx = doc["indices"]["start"] * files_per_datum
-        last_file_indx = doc["indices"]["stop"] * files_per_datum
+        first_file_indx = doc["indices"]["start"] * self.files_per_datum
+        last_file_indx = doc["indices"]["stop"] * self.files_per_datum
         for indx in range(first_file_indx, last_file_indx):
-            new_datum_uri = self.get_datum_uri(indx)
             new_asset = Asset(
-                data_uri=new_datum_uri,
+                data_uri=self.get_datum_uri(indx),
                 is_directory=False,
-                parameter="data_uris",
-                num=len(self.assets) + 1,
+                parameter=self.default_asset_role,
+                num=len(self.assets),
             )
             self.assets.append(new_asset)
-            self.data_uris.append(new_datum_uri)
 
         return super().consume_stream_datum(doc)
+
+    def update_from_stream_resource(self, stream_resource: StreamResource):
+        """Add an Asset for a new StreamResource document"""
+
+        self._sres_parameters = stream_resource["parameters"]
+        self.template = compile_template(
+            self._sres_parameters["template"], self._sres_parameters.get("filename", "")
+        )
+        self._recompute_files_per_datum()
+        # Increment the offset to reset the file index counter to start from "0" for the new StreamResource template
+        self._indx_offset = len(self.assets)
+
+
+class MultipartHDF5Consolidator(MultipartRelatedConsolidator):
+    supported_mimetypes = {"application/x-hdf5"}
+
+    def adapter_parameters(self) -> dict:
+        return HDF5Consolidator.adapter_parameters(self)
 
 
 class TIFFConsolidator(MultipartRelatedConsolidator):
     supported_mimetypes = {"multipart/related;type=image/tiff"}
 
-    def __init__(self, stream_resource: StreamResource, descriptor: EventDescriptor):
-        super().__init__({".tif", ".tiff"}, stream_resource, descriptor)
-
 
 class JPEGConsolidator(MultipartRelatedConsolidator):
     supported_mimetypes = {"multipart/related;type=image/jpeg"}
-
-    def __init__(self, stream_resource: StreamResource, descriptor: EventDescriptor):
-        super().__init__({".jpeg", ".jpg"}, stream_resource, descriptor)
 
 
 class NPYConsolidator(MultipartRelatedConsolidator):
@@ -648,12 +823,13 @@ class NPYConsolidator(MultipartRelatedConsolidator):
         data_key = stream_resource["data_key"]
         datum_shape = descriptor["data_keys"][data_key]["shape"]
         stream_resource["parameters"]["chunk_shape"] = (1, *datum_shape)
-        super().__init__({".npy"}, stream_resource, descriptor)
+        super().__init__(stream_resource, descriptor)
 
 
 CONSOLIDATOR_REGISTRY = collections.defaultdict(
     lambda: ConsolidatorBase,
     {
+        "application/octet-stream": BytesConsolidator,
         "text/csv;header=absent": CSVConsolidator,
         "application/x-hdf5": HDF5Consolidator,
         "multipart/related;type=image/tiff": TIFFConsolidator,

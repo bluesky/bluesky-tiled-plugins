@@ -148,7 +148,7 @@ def RawMongo(start):
         if not isinstance(value, dict):
             # We can transform this into a simple query.
             warnings.warn(
-                """RawMongo will not be supported
+                f"""RawMongo will not be supported
 in a future release of databroker, and its functionality has been limited.
 Instead, use:
 

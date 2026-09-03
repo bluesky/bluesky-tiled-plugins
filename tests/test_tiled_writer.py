@@ -1,8 +1,10 @@
 import json
 import os
+import uuid
 from collections.abc import Iterator
 from typing import cast
 from urllib.parse import parse_qs, urlparse
+
 
 import bluesky.plan_stubs as bps
 import bluesky.plans as bp
@@ -23,9 +25,20 @@ from event_model.documents.event_descriptor import DataKey
 from event_model.documents.stream_datum import StreamDatum
 from event_model.documents.stream_resource import StreamResource
 from tiled.client import record_history
+from tiled.utils import safe_json_dump
 from examples.render import render_templated_documents
 
 from bluesky_tiled_plugins import TiledWriter
+from bluesky_tiled_plugins.writing.validator import ValidationException
+
+
+# Several fixtures in this module intentionally exercise the (deprecated but still
+# supported) join_method="concat" layout. The dedicated test for the deprecation
+# warning lives in test_consolidators.py; here we silence it so the strict
+# filterwarnings=["error"] policy does not turn expected concat usage into errors.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:.*join_method='concat'.*:DeprecationWarning"
+)
 
 
 class Named(HasName):
@@ -60,6 +73,7 @@ class StreamDatumReadableCollectable(Named, Readable, Collectable, WritesStreamA
                 parameters={
                     "dataset": hdf5_dataset,
                     "chunk_shape": (100, *data_shape[1:]),
+                    "join_method": "concat",
                 },
                 data_key=data_key,
                 root=self.root,
@@ -315,9 +329,18 @@ def collect_plan(*objs, name="primary"):
 
 
 @pytest.mark.parametrize(
-    "fname", ["internal_events", "external_assets", "external_assets_legacy"]
+    "fname",
+    [
+        "internal_events",
+        "external_assets",
+        "external_assets_legacy",
+        "external_assets_multipart_hdf5",
+    ],
 )
 @pytest.mark.parametrize("batch_size", [0, 1, 1000, None])
+@pytest.mark.filterwarnings(
+    "ignore:Failed to convert ragged array to numpy:UserWarning:"
+)
 def test_with_correct_sample_runs(client, batch_size, external_assets_folder, fname):
     if batch_size is None:
         tw = TiledWriter(client)
@@ -414,7 +437,7 @@ def test_data_source_patching(
         assert actual_patch_offsets == expected_patch_offsets
 
 
-@pytest.mark.parametrize("error_type", ["shape", "chunks", "dtype"])
+@pytest.mark.parametrize("error_type", ["shape", "chunks", "dtype", "dims"])
 @pytest.mark.parametrize("validate", [True, False])
 def test_validate_external_data(client, external_assets_folder, error_type, validate):
     tw = TiledWriter(client, validate=validate)
@@ -429,13 +452,18 @@ def test_validate_external_data(client, external_assets_folder, error_type, vali
 
         # Modify the document to introduce an error
         if (error_type == "shape") and (name == "descriptor"):
-            doc["data_keys"]["det-key2"]["shape"] = [1, 2, 3]  # should be [1, 13, 17]
+            doc["data_keys"]["det-key2"]["shape"] = [2, 3]  # should be [13, 17]
         elif (error_type == "chunks") and name in {"resource", "stream_resource"}:
             doc["parameters"]["chunk_shape"] = [1, 2, 3]  # should be [3, 13, 17]
         elif (error_type == "dtype") and (name == "descriptor"):
             doc["data_keys"]["det-key2"]["dtype_numpy"] = np.dtype(
                 "int32"
             ).str  # should be "int64"
+        elif (error_type == "dims") and (name == "descriptor"):
+            item["doc"]["data_keys"]["det-key2"]["dims"] = [
+                "dim_2",
+                "dim_3",
+            ]  # Missing time dim
 
         # Check that the warning is issued when data changes during the validation
         if name == "stop" and validate:
@@ -452,6 +480,87 @@ def test_validate_external_data(client, external_assets_folder, error_type, vali
     else:
         assert run["primary"].read() is not None
         assert run["primary"]["det-key2"].read().shape == (3, 13, 17)
+        assert run["primary"]["det-key2"].structure().dims == ("time", "dim_2", "dim_3")
+
+
+@pytest.mark.parametrize(
+    "ignore_errors",
+    (
+        None,
+        [],
+        ["FileNotFoundError", "No such file or directory"],
+        [r"(?i)Could not determine size of asset", r"(?i)Unable to synchronously open"],
+    ),
+)
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_ignore_validation_errors(client, external_assets_folder, ignore_errors):
+    tw = TiledWriter(client, validate=True, ignore_errors=ignore_errors)
+
+    documents = render_templated_documents(
+        "external_assets_single_key.json", external_assets_folder
+    )
+    for item in documents:
+        name, doc = item["name"], item["doc"]
+        if name == "start":
+            uid = doc["uid"]
+
+        # Corrupt the URI to trigger a validation error
+        if name == "stream_resource":
+            doc["uri"] += "_"
+
+        if name == "stop":
+            if ignore_errors:
+                tw(name, doc)  # Should not raise due to ignored error
+            else:
+                with pytest.raises(ValidationException):
+                    tw(name, doc)
+        else:
+            tw(name, doc)
+
+    # Check that the data has been written
+    assert uid in client
+
+    # The run should have a stop document
+    assert client[uid].stop is not None
+
+    # The data would not be readable due to the wrong URI
+    with pytest.raises(Exception):
+        client[uid]["primary"].read()
+
+
+@pytest.mark.parametrize("ignore_errors", (None, ["FileNotFoundError"]))
+@pytest.mark.parametrize("fname", ["internal_events", "external_assets"])
+def test_validate_reading(client, external_assets_folder, fname, ignore_errors):
+    # NOTE: This is mainly just a smoke test
+    tw = TiledWriter(client, validate=False, ignore_errors=ignore_errors)
+
+    documents = render_templated_documents(fname + ".json", external_assets_folder)
+    for item in documents:
+        name, doc = item["name"], item["doc"]
+        if name == "start":
+            uid = doc["uid"]
+
+        tw(name, doc)
+
+    # Check that the data has been written
+    assert uid in client
+    run_client = client[uid]
+    assert run_client.stop is not None
+
+    # Trigger the reading validation via the GET API
+    response = run_client.context.http_client.get(
+        run_client.uri.replace("/metadata/", "/validate/", 1),
+        params={"fix": True, "read": True},
+    )
+    assert response is not None
+
+    # Trigger the reading validation via the POST API with ignore_errors parameter
+    response = run_client.context.http_client.post(
+        run_client.uri.replace("/metadata/", "/validate/", 1),
+        params={"fix": True, "read": True},
+        content=safe_json_dump({"ignore_errors": ignore_errors}),
+    )
+    assert response is not None
 
 
 @pytest.mark.parametrize("squeeze", [True, False])
@@ -480,27 +589,104 @@ def test_slice_and_squeeze(client, external_assets_folder, squeeze):
     assert client[uid]["primary"].read() is not None
 
 
-def test_legacy_multiplier_parameter(client, external_assets_folder):
-    tw = TiledWriter(client)
+@pytest.mark.parametrize("multiplier_key", ["multiplier", "frame_per_point"])
+@pytest.mark.parametrize("validate", [True, False])
+def test_legacy_with_multiplier_parameter(
+    client, multiplier_key, validate, external_assets_folder
+):
+    tw = TiledWriter(client, validate=validate)
 
     documents = render_templated_documents(
-        "external_assets_single_key_two_files.json", external_assets_folder
+        "external_assets_legacy.json", external_assets_folder
     )
     for item in documents:
         name, doc = item["name"], item["doc"]
         if name == "start":
             uid = doc["uid"]
 
-        # Modify the documents to add slice and squeeze parameters
+        # Modify the documents to add the multiplier parameter
         if name == "descriptor":
             doc["data_keys"]["det-key2"]["shape"] = [13, 17]
         elif name in {"resource", "stream_resource"}:
-            doc["parameters"]["multiplier"] = 1
+            doc["resource_kwargs"].pop("frame_per_point", None)  # Remove if exists
+            doc["resource_kwargs"][multiplier_key] = 1
 
-        tw(name, doc)
+        # Check that the warning is issued when data changes during the validation
+        if name == "stop" and validate:
+            with pytest.warns(UserWarning):
+                tw(name, doc)
+        else:
+            tw(name, doc)
 
     # Try reading the imported data
     assert client[uid]["primary"].read() is not None
+
+    # Check the metadata and structure of the array
+    arr = client[uid]["primary/det-key2"]
+    assert arr.metadata["frame_per_point"] == 1  # always called "frame_per_point"
+    if validate:
+        assert arr.shape == (3, 1, 13, 17)
+        assert arr.chunks == ((3,), (1,), (13,), (17,))
+        assert arr.data_sources()[0].properties["chunks"] == [[3], [13], [17]]
+    else:
+        assert arr.shape == (3, 13, 17)
+        assert arr.chunks == ((3,), (13,), (17,))
+        assert not arr.data_sources()[0].properties
+
+
+def test_shared_resource_multi_stream(client, external_assets_folder):
+    """Two descriptors share one Resource; each must land on its own Tiled node.
+
+    Mirrors the real-world case of an area detector triggered per stream,
+    writing successive frames as a TIFF stack shared by all streams. Both
+    descriptors use the same `data_key`; each Datum picks a specific file
+    in the stack via a spec-specific `point_number` kwarg. Stream shapes
+    differ (one image vs. two) to exercise per-stream frame counts.
+
+    `point_number` is not a concept the writer understands; the caller
+    normalizes it to the standard `indices` field via a `patches["datum"]`
+    hook. With the fix, the writer emits a distinct StreamResource per
+    (resource, descriptor, data_key), so each stream gets its own node
+    instead of colliding onto the first descriptor's node.
+    """
+
+    def patch_datum(doc):
+        kwargs = doc.get("datum_kwargs", {})
+
+        # Override indices with the point_number if present:
+        # Necessary to correctly apply the filename template to tiff files
+        # when a single Resource is referenced by multiple descriptors.
+        point_number = kwargs.pop("point_number", None)
+        if point_number is not None:
+            kwargs["indices"] = {"start": point_number, "stop": point_number + 1}
+        return doc
+
+    tw = TiledWriter(client, patches={"datum": patch_datum})
+
+    for item in render_templated_documents(
+        "external_assets_shared_resource.json", external_assets_folder
+    ):
+        name, doc = item["name"], item["doc"]
+        if name == "start":
+            uid = doc["uid"]
+        tw(name, doc)
+
+    # Stream `s0` holds a single frame (point 0); stream `s1` holds two
+    # frames (points 1 and 2) from the same TIFF stack.
+    expected_frames = {"s0": [0], "s1": [1, 2]}
+    for stream_name, points in expected_frames.items():
+        arr = client[uid][f"{stream_name}/det_image"]
+        assert arr.shape == (len(points), 1, 10, 15), (
+            f"{stream_name}: expected shape ({len(points)}, 1, 10, 15), got {arr.shape}"
+        )
+        data = np.asarray(arr.read())
+        for row, point_number in enumerate(points):
+            expected = tf.imread(
+                os.path.join(
+                    external_assets_folder, "tiff_files", f"img_{point_number:05}.tif"
+                )
+            )
+            np.testing.assert_array_equal(data[row], expected)
 
 
 def test_streams_with_no_events(client, external_assets_folder):
@@ -619,7 +805,15 @@ def test_json_backup(client, tmpdir, monkeypatch):
 
 @pytest.mark.parametrize(
     "max_array_size, expected_scheme",
-    [(0, "file"), (4, "file"), (16, "duckdb"), (-1, "duckdb")],
+    [
+        (0, "file"),
+        (4, "file"),
+        (16, "duckdb"),
+        (-1, "duckdb"),
+    ],
+)
+@pytest.mark.filterwarnings(
+    "ignore:Failed to convert ragged array to numpy:UserWarning"
 )
 def test_internal_arrays_written_as_zarr(client, max_array_size, expected_scheme):
     tw = TiledWriter(client, max_array_size=max_array_size)
@@ -642,6 +836,59 @@ def test_internal_arrays_written_as_zarr(client, max_array_size, expected_scheme
         urlparse(internal_table.data_sources()[0].assets[0].data_uri).scheme == "duckdb"
     )
 
+    # String arrays are always written as zarr, regardless of their size, because
+    # they can not be stored in the SQL table in a readable form.
+    str_arr = run["primary"]["str_arr"]
+    str_arr_expected = np.array(
+        [["foo", "bar", "baz"], ["qux", "quux", "corge"], ["grault", "garply", "waldo"]]
+    )
+    assert str_arr.shape == (3, 3)
+    assert str_arr.read().dtype == np.dtype("<U6")
+    assert str_arr.read().shape == (3, 3)
+    assert np.array_equal(str_arr.read(), str_arr_expected)
+    assert "str_arr" not in internal_table.columns
+    assert urlparse(str_arr.data_sources()[0].assets[0].data_uri).scheme == "file"
+
+    # The "empty" data_key carries a zero-length array in every event. When
+    # classified as an internal (zarr) array (max_array_size == 0) it holds no
+    # data and can not be chunked by zarr, so it falls back to the tabular
+    # store instead of being written as a separate zarr node.
+    if max_array_size == 0:
+        assert "empty" not in run["primary"].base
+        assert "empty" in internal_table.columns
+
+    # An nD per-event array (2x3 strings) is stored as a 3D zarr array and read
+    # back with its full shape.
+    str_img = run["primary"]["str_img"]
+    assert str_img.shape == (3, 2, 3)
+    assert str_img.read()[0].tolist() == [["aa", "bb", "cc"], ["dd", "ee", "ff"]]
+    assert urlparse(str_img.data_sources()[0].assets[0].data_uri).scheme == "file"
+
+    # Internal dimension names: the event axis is always "time"; inner dims are
+    # named per size with a "dim_int_" prefix and shared across keys so
+    # equal-sized dimensions align in the xarray Dataset.
+    str_arr_dims = run["primary"].base["str_arr"].dims
+    str_img_dims = run["primary"].base["str_img"].dims
+    assert str_arr_dims[0] == str_img_dims[0] == "time"
+    assert all(d.startswith("dim_int_") for d in str_arr_dims[1:] + str_img_dims[1:])
+    # str_arr (size 3) and str_img's trailing axis (size 3) share a name; the
+    # two str_img axes (sizes 2 and 3) get distinct names.
+    assert str_img_dims[2] == str_arr_dims[1]
+    assert str_img_dims[1] != str_img_dims[2]
+
+    # Ragged arrays: the variable-length (None) axis is named "dim_rgd_{axis}"
+    # while a fixed-size axis reuses a shared "dim_int_" name.
+    ragged_dims = run["primary"].base["ragged"].dims
+    assert ragged_dims[0] == "time"
+    assert ragged_dims[-1] == "dim_rgd_2"
+    assert ragged_dims[1].startswith("dim_int_")
+
+    # Tabular columns share the same "time" event axis as the zarr arrays, so
+    # the assembled dataset has no stray "dim0".
+    dataset = run["primary"].read()
+    assert "time" in dataset.sizes
+    assert "dim0" not in dataset.sizes
+
     if expected_scheme == "file":
         assert (
             "long" in run["primary"].base
@@ -653,7 +900,155 @@ def test_internal_arrays_written_as_zarr(client, max_array_size, expected_scheme
             urlparse(run["primary"]["long"].data_sources()[0].assets[0].data_uri).scheme
             == "file"
         )
+        # The size-8 "long" axis gets a different name than the size-3 str_arr
+        # axis.
+        long_dims = run["primary"].base["long"].dims
+        assert long_dims[0] == "time"
+        assert long_dims[1].startswith("dim_int_")
+        assert long_dims[1] != str_arr_dims[1]
     else:
         assert "long" not in run["primary"].base
         assert "long" in internal_table.columns
         assert run["primary"]["long"].data_sources() is None
+
+
+def test_large_internal_table_split_into_multiple_nodes(client, monkeypatch):
+    """A stream whose internal table has more columns than `MAX_TABLE_COLUMNS`
+    is stored as several `internal_{i}` nodes, each holding a disjoint subset
+    of the columns; all columns remain readable through the stream.
+    """
+    from bluesky_tiled_plugins.writing import tiled_writer as tw_mod
+
+    monkeypatch.setattr(tw_mod, "MAX_TABLE_COLUMNS", 4)
+
+    ncols = 10
+    keys = [f"col_{i:03d}" for i in range(ncols)]
+    uid = uuid.uuid4().hex
+    desc_uid = uuid.uuid4().hex
+    docs = [
+        ("start", {"uid": uid, "time": 0.0}),
+        (
+            "descriptor",
+            {
+                "uid": desc_uid,
+                "run_start": uid,
+                "time": 0.0,
+                "name": "primary",
+                "data_keys": {
+                    k: {
+                        "source": "sim",
+                        "dtype": "number",
+                        "shape": [],
+                        "object_name": "det",
+                    }
+                    for k in keys
+                },
+                "object_keys": {"det": keys},
+            },
+        ),
+        (
+            "event",
+            {
+                "uid": uuid.uuid4().hex,
+                "descriptor": desc_uid,
+                "time": 0.0,
+                "seq_num": 1,
+                "data": {k: float(i) for i, k in enumerate(keys)},
+                "timestamps": {k: 0.0 for k in keys},
+                "filled": {},
+            },
+        ),
+        (
+            "stop",
+            {
+                "uid": uuid.uuid4().hex,
+                "run_start": uid,
+                "time": 1.0,
+                "exit_status": "success",
+                "num_events": {"primary": 1},
+            },
+        ),
+    ]
+
+    tw = TiledWriter(client)
+    for name, doc in docs:
+        tw(name=name, doc=doc)
+
+    run = client[uid]
+    base = run["primary"].base
+
+    # The internal table (data columns plus their `ts_` timestamps and
+    # `seq_num`/`time`) exceeds MAX_TABLE_COLUMNS and is split into a
+    # contiguously numbered set of `internal_{i}` nodes.
+    internal_nodes = sorted(k for k in base.keys() if k.startswith("internal"))
+    assert len(internal_nodes) > 1
+    assert internal_nodes == [f"internal_{i}" for i in range(len(internal_nodes))]
+
+    # Each part holds at most MAX_TABLE_COLUMNS columns, and every data key is
+    # stored in exactly one part.
+    for node_key in internal_nodes:
+        assert len(base[node_key].columns) <= 4
+    stored = [
+        c for node_key in internal_nodes for c in base[node_key].columns if c in keys
+    ]
+    assert sorted(stored) == keys
+
+    # All columns are still readable through the assembled stream.
+    dataset = run["primary"].read()
+    for i, k in enumerate(keys):
+        assert float(dataset[k].values[0]) == float(i)
+
+
+@pytest.mark.parametrize("corrupt_uri", [False, True])
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_bytes_roundtrip(client, external_assets_folder, corrupt_uri):
+    """End-to-end registration of `bytes` data sources via `TiledWriter`.
+
+    Covers both a single-file stream resource and a multi-file (templated)
+    stream resource in one run. When `corrupt_uri` is set, the URIs are
+    munged so the files do not exist -- validation must raise
+    `ValidationException` (surfaced from `AssetValidationException`) rather
+    than silently accepting the missing assets.
+    """
+    tw = TiledWriter(client, validate=True)
+    uid = None
+    documents = list(
+        render_templated_documents("external_assets_bytes.json", external_assets_folder)
+    )
+    for item in documents:
+        name, doc = item["name"], item["doc"]
+        if name == "start":
+            uid = doc["uid"]
+        if corrupt_uri and name == "stream_resource":
+            doc["uri"] += "_missing"
+        if corrupt_uri and name == "stop":
+            with pytest.raises(ValidationException):
+                tw(name, doc)
+        else:
+            tw(name, doc)
+
+    if corrupt_uri:
+        # The run was created but validation on stop raised;
+        # nothing further to assert about the (unwritten) sizes.
+        assert uid in client
+        return
+
+    run = client[uid]
+
+    single = run["primary"]["det-blob-single"].data_sources()[0]
+    multi = run["primary"]["det-blob-multi"].data_sources()[0]
+
+    assert single.structure_family == "bytes"
+    assert single.mimetype == "application/octet-stream"
+    assert len(single.assets) == 1
+    assert single.assets[0].data_uri.endswith("/blob.bin")
+
+    assert multi.structure_family == "bytes"
+    assert len(multi.assets) == 3
+    for i, asset in enumerate(multi.assets):
+        assert asset.data_uri.endswith(f"blob_{i:05d}.bin")
+
+    # With the remote validator router (app1) sizes are populated;
+    # with the local fallback (app0) they remain unset.
+    assert single.assets[0].size in (None, 15)
+    assert all(a.size in (None, 10) for a in multi.assets)

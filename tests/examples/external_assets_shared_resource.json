@@ -1,0 +1,147 @@
+[
+  {
+    "name": "start",
+    "doc": {
+      "uid": "{{ uuid }}-9724b2201fe7",
+      "time": 1745500521.706236,
+      "scan_id": 3,
+      "plan_type": "generator",
+      "plan_name": "count",
+      "detectors": ["det"]
+    }
+  },
+  {
+    "name": "resource",
+    "doc": {
+      "resource_kwargs": {
+        "template": "/%s%s_%5.5d.tif",
+        "filename": "img",
+        "frame_per_point": 1,
+        "join_method": "stack"
+      },
+      "root": "{{ root_path }}",
+      "resource_path": "/tiff_files/",
+      "spec": "AD_TIFF",
+      "uid": "tiff-stack-resource"
+    }
+  },
+  {
+    "name": "descriptor",
+    "doc": {
+      "configuration": {
+        "det": { "data": {}, "timestamps": {}, "data_keys": {} }
+      },
+      "data_keys": {
+        "det_image": {
+          "source": "file",
+          "dtype": "array",
+          "dtype_numpy": "|u1",
+          "shape": [1, 10, 15],
+          "external": "FILESTORE:",
+          "object_name": "det"
+        }
+      },
+      "name": "s0",
+      "object_keys": { "det": ["det_image"] },
+      "run_start": "{{ uuid }}-9724b2201fe7",
+      "time": 1745500521.79327,
+      "uid": "{{ uuid }}-desc-s0",
+      "hints": {}
+    }
+  },
+  {
+    "name": "datum",
+    "doc": {
+      "resource": "tiff-stack-resource",
+      "datum_kwargs": { "point_number": 0 },
+      "datum_id": "tiff-stack-resource/0"
+    }
+  },
+  {
+    "name": "event",
+    "doc": {
+      "uid": "{{ uuid }}-event-s0-0",
+      "time": 1745500522.79327,
+      "data": { "det_image": "tiff-stack-resource/0" },
+      "timestamps": { "det_image": 1745500522.79327 },
+      "seq_num": 1,
+      "filled": {},
+      "descriptor": "{{ uuid }}-desc-s0"
+    }
+  },
+  {
+    "name": "descriptor",
+    "doc": {
+      "configuration": {
+        "det": { "data": {}, "timestamps": {}, "data_keys": {} }
+      },
+      "data_keys": {
+        "det_image": {
+          "source": "file",
+          "dtype": "array",
+          "dtype_numpy": "|u1",
+          "shape": [1, 10, 15],
+          "external": "FILESTORE:",
+          "object_name": "det"
+        }
+      },
+      "name": "s1",
+      "object_keys": { "det": ["det_image"] },
+      "run_start": "{{ uuid }}-9724b2201fe7",
+      "time": 1745500522.79327,
+      "uid": "{{ uuid }}-desc-s1",
+      "hints": {}
+    }
+  },
+  {
+    "name": "datum",
+    "doc": {
+      "resource": "tiff-stack-resource",
+      "datum_kwargs": { "point_number": 1 },
+      "datum_id": "tiff-stack-resource/1"
+    }
+  },
+  {
+    "name": "event",
+    "doc": {
+      "uid": "{{ uuid }}-event-s1-0",
+      "time": 1745500523.79327,
+      "data": { "det_image": "tiff-stack-resource/1" },
+      "timestamps": { "det_image": 1745500523.79327 },
+      "seq_num": 1,
+      "filled": {},
+      "descriptor": "{{ uuid }}-desc-s1"
+    }
+  },
+  {
+    "name": "datum",
+    "doc": {
+      "resource": "tiff-stack-resource",
+      "datum_kwargs": { "point_number": 2 },
+      "datum_id": "tiff-stack-resource/2"
+    }
+  },
+  {
+    "name": "event",
+    "doc": {
+      "uid": "{{ uuid }}-event-s1-1",
+      "time": 1745500524.79327,
+      "data": { "det_image": "tiff-stack-resource/2" },
+      "timestamps": { "det_image": 1745500524.79327 },
+      "seq_num": 2,
+      "filled": {},
+      "descriptor": "{{ uuid }}-desc-s1"
+    }
+  },
+  {
+    "name": "stop",
+    "doc": {
+      "uid": "{{ uuid }}-fe2748f474de",
+      "time": 1745500525.771699,
+      "run_start": "{{ uuid }}-9724b2201fe7",
+      "exit_status": "success",
+      "reason": "",
+      "num_events": { "s0": 1, "s1": 2 }
+    }
+  }
+]

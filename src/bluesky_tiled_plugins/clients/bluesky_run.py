@@ -1,5 +1,7 @@
+import codecs
 import copy
 import functools
+import httpx
 import io
 import json
 import keyword
@@ -8,6 +10,8 @@ from datetime import datetime
 
 from tiled.client.container import Container
 from tiled.client.utils import handle_error, retry_context
+from tiled.utils import safe_json_dump
+from tiled.type_aliases import JSON_ITEM
 
 from ._common import IPYTHON_METHODS
 from .bluesky_event_stream import BlueskyEventStreamV2SQL
@@ -22,6 +26,7 @@ from .document import (
     StreamDatum,
     StreamResource,
 )
+from ..writing.validator import validate, ValidationException
 
 _document_types = {
     "start": Start,
@@ -31,9 +36,34 @@ _document_types = {
     "event_page": EventPage,
     "datum_page": DatumPage,
     "resource": Resource,
-    "stream_resource": StreamDatum,
-    "stream_datum": StreamResource,
+    "stream_resource": StreamResource,
+    "stream_datum": StreamDatum,
 }
+
+
+def _iter_json_seq(byte_chunks):
+    """Yield (name, doc) parsed from a stream of bytes containing
+    document records in either RFC 7464 JSON-Seq framing (each record
+    prefixed with \\x1E and terminated by \\n) or legacy NDJSON framing
+    (records separated by \\n only). Accepting both keeps a newer client
+    interoperable with an older server during a rolling upgrade.
+    """
+    buffer = ""
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    for chunk in byte_chunks:
+        buffer += decoder.decode(chunk)
+        while "\n" in buffer:
+            line, buffer = buffer.split("\n", 1)
+            record = line.lstrip("\x1e").strip()
+            if not record:
+                continue
+            item = json.loads(record)
+            yield item["name"], _document_types[item["name"]](item["doc"])
+    buffer += decoder.decode(b"", final=True)
+    record = buffer.lstrip("\x1e").strip()
+    if record:
+        item = json.loads(record)
+        yield item["name"], _document_types[item["name"]](item["doc"])
 
 
 class BlueskyRun(Container):
@@ -50,14 +80,14 @@ class BlueskyRun(Container):
         return _cls(context, item=item, structure_clients=structure_clients, **kwargs)
 
     @staticmethod
-    def _is_sql(item):
+    def _is_sql(item) -> bool:
         for spec in item["attributes"]["specs"]:
             if spec["name"] == "BlueskyRun":
                 if spec["version"].startswith("3."):
                     return True
                 return False
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         metadata = self.metadata
         datetime_ = datetime.fromtimestamp(metadata["start"]["time"])
         return (
@@ -70,7 +100,7 @@ class BlueskyRun(Container):
         )
 
     @property
-    def start(self):
+    def start(self) -> dict[str, JSON_ITEM]:
         """
         The Run Start document. A convenience alias:
 
@@ -80,7 +110,7 @@ class BlueskyRun(Container):
         return self.metadata["start"]
 
     @property
-    def stop(self):
+    def stop(self) -> dict[str, JSON_ITEM]:
         """
         The Run Stop document. A convenience alias:
 
@@ -90,8 +120,16 @@ class BlueskyRun(Container):
         return self.metadata["stop"]
 
     @functools.cached_property
-    def descriptors(self):
-        return [doc for name, doc in self.documents() if name == "descriptor"]
+    def descriptors(self) -> list[dict[str, JSON_ITEM]]:
+        # Read descriptor documents from each stream's cached metadata
+        # rather than walking the full event stream, which would be
+        # catastrophic on runs with many events.
+        descriptors = []
+        for stream_name in self._stream_names:
+            stream = self[stream_name]
+            if hasattr(stream, "descriptors"):
+                descriptors.extend(stream.descriptors)
+        return descriptors
 
     def __getattr__(self, key):
         """
@@ -117,7 +155,7 @@ class BlueskyRun(Container):
         ]
         return super().__dir__() + tab_completable_entries
 
-    def describe(self):
+    def describe(self) -> dict[str, dict[str, JSON_ITEM]]:
         "For back-compat with intake-based BlueskyRun"
         warnings.warn(
             "This will be removed. Use .metadata directly instead of describe()['metadata'].",
@@ -142,7 +180,7 @@ class BlueskyRun(Container):
         )
 
     @property
-    def base(self):
+    def base(self) -> Container:
         "Return the base Container client instead of a BlueskyRun client"
         return Container(
             self.context,
@@ -184,11 +222,11 @@ class BlueskyRunV2(BlueskyRun):
         return header
 
     @property
-    def v2(self):
+    def v2(self) -> "BlueskyRunV2":
         return self
 
     @property
-    def v3(self):
+    def v3(self) -> "BlueskyRunV3":
         if not self._is_sql(self.item):
             raise NotImplementedError(
                 "v3 is not available for MongoDB-based BlueskyRun"
@@ -223,21 +261,11 @@ class BlueskyRunV2Mongo(BlueskyRunV2):
                     if response.is_error:
                         response.read()
                         handle_error(response)
-                    tail = ""
-                    for chunk in response.iter_bytes():
-                        for line in chunk.decode().splitlines(keepends=True):
-                            if line[-1] == "\n":
-                                item = json.loads(tail + line)
-                                yield (
-                                    item["name"],
-                                    _document_types[item["name"]](item["doc"]),
-                                )
-                                tail = ""
-                            else:
-                                tail += line
-                    if tail:
-                        item = json.loads(tail)
-                        yield (item["name"], _document_types[item["name"]](item["doc"]))
+                    # Accept both RFC 7464 JSON-Seq (each record prefixed
+                    # with \x1E, terminated by \n) and legacy NDJSON
+                    # (records separated by \n only) so a new client can
+                    # talk to an older server during a rolling upgrade.
+                    yield from _iter_json_seq(response.iter_bytes())
 
 
 class _BlueskyRunSQL(BlueskyRun):
@@ -257,7 +285,7 @@ class _BlueskyRunSQL(BlueskyRun):
         2. The specs of the "streams" container do not include "BlueskyEventStream",
            indicating that "streams" is not itself a BlueskyEventStream.
         """
-        return ("streams" in self.base) and (
+        return ("streams" in self.base.keys()) and (
             "BlueskyEventStream" not in {s.name for s in self.base["streams"].specs}
         )
 
@@ -345,17 +373,13 @@ class _BlueskyRunSQL(BlueskyRun):
     def _keys_slice(
         self, start, stop, direction, page_size: int | None = None, **kwargs
     ):
-        sorted_keys = (
-            reversed(self._stream_names) if direction < 0 else self._stream_names
-        )
+        sorted_keys = self._stream_names[::-1] if direction < 0 else self._stream_names
         return (yield from sorted_keys[start:stop])
 
     def _items_slice(
         self, start, stop, direction, page_size: int | None = None, **kwargs
     ):
-        sorted_keys = (
-            reversed(self._stream_names) if direction < 0 else self._stream_names
-        )
+        sorted_keys = self._stream_names[::-1] if direction < 0 else self._stream_names
         for key in sorted_keys[start:stop]:
             yield key, self[key]
 
@@ -363,12 +387,15 @@ class _BlueskyRunSQL(BlueskyRun):
         yield from self._stream_names
 
     def documents(self, fill=False):
+        if fill:
+            raise NotImplementedError(
+                "documents(fill=True) is not supported for SQL-based BlueskyRun clients"
+            )
+
         with io.BytesIO() as buffer:
             self.export(buffer, format="application/json-seq")
             buffer.seek(0)
-            for line in buffer:
-                parsed = json.loads(line.decode().strip())
-                yield parsed["name"], _document_types[parsed["name"]](parsed["doc"])
+            yield from _iter_json_seq(buffer)
 
 
 class BlueskyRunV2SQL(BlueskyRunV2, _BlueskyRunSQL):
@@ -434,7 +461,7 @@ class BlueskyRunV3(_BlueskyRunSQL):
         return self.v2.v1
 
     @property
-    def v2(self):
+    def v2(self) -> BlueskyRunV2:
         structure_clients = copy.copy(self.structure_clients)
         structure_clients.set("BlueskyRun", lambda: BlueskyRunV2)
         return BlueskyRunV2(
@@ -442,5 +469,96 @@ class BlueskyRunV3(_BlueskyRunSQL):
         )
 
     @property
-    def v3(self):
+    def v3(self) -> "BlueskyRunV3":
         return self
+
+    def validate(
+        self,
+        fix_errors=True,
+        try_reading=True,
+        raise_on_error=False,
+        ignore_errors=None,
+        write_notes=True,
+    ):
+        """Validate for for completeness and data integrity.
+
+        Parameters
+        ----------
+        fix_errors : bool, optional
+            Whether to attempt to fix structural errors found during validation.
+            Default is True.
+        try_reading : bool, optional
+            Whether to attempt reading the data for external data keys.
+            Default is True.
+        raise_on_error : bool, optional
+            Whether to raise an exception on the first validation error encountered.
+            Default is False.
+        ignore_errors : list of str, optional
+            List of error messages to ignore during validation. If any errors whose
+            message matches one of the patterns in this list are encountered, they will
+            be logged, but the validation of the remaining data keys will continue.
+        write_notes : bool, optional
+            Whether to write validation notes to the root client's metadata.
+            Default is True.
+
+        Returns
+        -------
+        bool
+            True if the data structure is valid and reading succeeded, False otherwise.
+        """
+
+        is_valid = False
+
+        for attempt in retry_context():
+            with attempt:
+                response = self.context.http_client.post(
+                    self.uri.replace("/api/v1/metadata/", "/custom/validate/", 1),
+                    params={"fix": fix_errors, "read": try_reading},
+                    content=safe_json_dump({"ignore_errors": ignore_errors}),
+                )
+
+        try:
+            content = handle_error(response).json()
+            is_valid, notes = content.get("valid"), content.get("notes", [])
+
+            if is_valid:
+                for note in notes:
+                    warnings.warn(note, stacklevel=2)
+
+                if notes and write_notes:
+                    existing_notes = self.metadata.get("notes", [])
+                    self.update_metadata(
+                        {"notes": existing_notes + notes}, drop_revision=True
+                    )
+            elif raise_on_error:
+                msg = "Remote validation failed: " + "; ".join(notes)
+                raise ValidationException(msg, self.item["id"])
+
+        except httpx.HTTPStatusError as e:
+            # Backcompatibility: if the server does not support validation endpoint,
+            # it will return 404 Not Found error; in this case, attempt to validate
+            # the data structure locally by the client itself (requires multiple
+            # round-trips to the server, but better than nothing).
+
+            if response.status_code == httpx.codes.NOT_FOUND:
+                warnings.warn(
+                    "Tiled server does not support remote validation. "
+                    "Attempting to validate the data structure by the client.",
+                    stacklevel=2,
+                )
+                return validate(
+                    self,
+                    fix_errors=fix_errors,
+                    try_reading=try_reading,
+                    raise_on_error=raise_on_error,
+                    ignore_errors=ignore_errors,
+                    write_notes=write_notes,
+                )
+            elif raise_on_error:
+                msg = (
+                    "Remote validation request failed with status code "
+                    f"{response.status_code}: {response.text}"
+                )
+                raise ValidationException(msg, self.item["id"]) from e
+
+        return is_valid

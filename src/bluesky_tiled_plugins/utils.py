@@ -1,4 +1,35 @@
 import collections.abc
+import math
+import re
+from urllib.parse import urlparse
+from tiled.utils import path_from_uri
+
+__all__ = [
+    "size_from_uri",
+    "truncate_json_overflow",
+    "compile_template",
+    "list_summands",
+    "split_table",
+]
+
+# If only tiled['client'] is installed we can not use the `size_from_uri` utility
+# from tiled.storage, so we provide a fallback implementation here.
+# TODO: Remove/refactor in future a release.
+try:
+    from tiled.storage import size_from_uri
+except ImportError:
+
+    def size_from_uri(data_uri: str) -> int:
+        """Return the byte length of the asset at `data_uri`.
+
+        A client-side version of the standard tiled's `size_from_uri` utility.
+        Only supports assets with a `file://` scheme, assuming they are accessible
+        from the local filesystem. For other schemes, returns None.
+        """
+
+        if urlparse(data_uri).scheme == "file":
+            return path_from_uri(data_uri).stat().st_size
+        return None
 
 
 def truncate_json_overflow(data):
@@ -26,3 +57,77 @@ def truncate_json_overflow(data):
             max(data, -1.7976e308), 1.7976e308
         )  # (Approx.) truncate floats to fit in JSON to avoid inf
     return data
+
+
+def compile_template(template: str, filename: str = "") -> str:
+    """Compile a filename template from old-style to new-style Python formatting
+
+    Parameters
+    ----------
+    template : str
+        An old-style Python formatting string, e.g. "%s%s_%06d.tif
+    filename : str
+        An optional filename to substitute for the first %s in the template.
+
+    Returns
+    -------
+        A new-style Python formatting string, e.g. "filename_{:06d}.tif"
+    """
+
+    def int_replacer(match):
+        """Normalize filename template
+
+        Replace an integer format specifier with a new-style format specifier,
+        i.e. convert the template string from "old" to "new" Python style,
+        e.g. "%s%s_%06d.tif" to "filename_{:06d}.tif"
+
+        """
+        flags, width, precision, type_char = match.groups()
+
+        # Handle the flags
+        flag_str = ""
+        if "-" in flags:
+            flag_str = "<"  # Left-align
+        if "+" in flags:
+            flag_str += "+"  # Show positive sign
+        elif " " in flags:
+            flag_str += " "  # Space before positive numbers
+        if "0" in flags:
+            flag_str += "0"  # Zero padding
+
+        # Build width and precision if they exist
+        width_str = width if width else ""
+        precision_str = f".{precision}" if precision else ""
+
+        # Handle cases like "%6.6d", which should be converted to "{:06d}"
+        if precision and width:
+            flag_str = "0"
+            precision_str = ""
+            width_str = str(max(int(precision), int(width)))
+
+        # Construct the new-style format specifier
+        return f"{{:{flag_str}{width_str}{precision_str}{type_char}}}"
+
+    result = (
+        template.replace("%s", "{:s}", 1).replace("%s", "").replace("{:s}", filename, 1)
+    )
+    result = re.sub(r"%([-+#0 ]*)(\d+)?(?:\.(\d+))?([d])", int_replacer, result)
+
+    return result
+
+
+def list_summands(A: int, b: int, repeat: int = 1) -> tuple[int, ...]:
+    # Generate a list with repeated b summing up to A; append the remainder if necessary
+    # e.g. list_summands(13, 3) = [3, 3, 3, 3, 1]
+    # if `repeat = n`, n > 1, copy and repeat the entire result n times
+    return tuple([b] * (A // b) + ([A % b] if A % b > 0 else [])) * repeat or (0,)
+
+
+def split_table(table, max_columns):
+    """Split a pyarrow Table into multiple tables with at most `max_columns` columns each."""
+    columns = sorted(table.column_names)
+    ncols = len(columns)
+    part_size = math.ceil(ncols / math.ceil(ncols / max_columns))
+
+    for i in range(0, ncols, part_size):
+        yield table.select(columns[i : i + part_size])

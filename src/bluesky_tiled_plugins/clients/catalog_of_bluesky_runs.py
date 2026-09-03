@@ -93,9 +93,8 @@ class CatalogOfBlueskyRuns(Container):
     def is_sql(self):
         for spec in self.specs:
             if spec.name == "CatalogOfBlueskyRuns":
-                if spec.version and spec.version.startswith("3."):
-                    return True
-                return False
+                return bool(spec.version and spec.version.startswith("3."))
+        return False
 
     def __getitem__(self, key):
         # For convenience and backward-compatiblity reasons, we support

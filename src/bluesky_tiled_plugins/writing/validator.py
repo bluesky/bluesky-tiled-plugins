@@ -1,12 +1,22 @@
 import logging
 import re
-import time
+import copy
+import collections
+from dataclasses import asdict
+import numpy
+from packaging.version import Version
 
 from tiled.client.array import ArrayClient
 from tiled.client.dataframe import DataFrameClient
 from tiled.client.utils import handle_error, retry_context
-from tiled.mimetypes import DEFAULT_ADAPTERS_BY_MIMETYPE as ADAPTERS_BY_MIMETYPE
+from tiled.mimetypes import DEFAULT_ADAPTERS_BY_MIMETYPE
 from tiled.utils import safe_json_dump
+from tiled.structures.array import StructDtype, BuiltinDtype
+from tiled.structures.bytes import BytesStructure
+from tiled.structures.core import STRUCTURE_TYPES
+from tiled.structures.data_source import DataSource
+from ..utils import list_summands, size_from_uri
+
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +28,14 @@ class ValidationException(Exception):
 
 
 class ReadingValidationException(ValidationException):
+    pass
+
+
+class AssetValidationException(ValidationException):
+    pass
+
+
+class StructureValidationException(ValueError):
     pass
 
 
@@ -34,7 +52,8 @@ def validate(
     fix_errors=True,
     try_reading=True,
     raise_on_error=False,
-    ignore_errors=[],
+    ignore_errors=None,
+    write_notes=True,
 ):
     """Validate the given BlueskyRun client for completeness and data integrity.
 
@@ -53,8 +72,12 @@ def validate(
         Whether to raise an exception on the first validation error encountered.
         Default is False.
     ignore_errors : list of str, optional
-        List of error messages to ignore during reading validation.
-        Default is an empty list.
+        List of error messages to ignore during validation. If any errors whose
+        message matches one of the patterns in this list are encountered, they will
+        be logged, but the validation of the remaining data keys will continue.
+    write_notes : bool, optional
+        Whether to write validation notes to the root client's metadata.
+        Default is True.
 
     Returns
     -------
@@ -70,6 +93,7 @@ def validate(
 
     # Check all streams and data keys
     errored_keys, notes = [], []
+    ignore_errors = ignore_errors or []
     streams_node = (
         root_client["streams"] if "streams" in root_client.keys() else root_client
     )
@@ -94,56 +118,55 @@ def validate(
                 )
                 msg = title + f" failed with error: {msg}"
                 logger.error(msg)
-                if raise_on_error:
+                if any(re.search(ptrn, str(e)) for ptrn in ignore_errors):
+                    logger.warning(f"Ignored validation error: {e}")
+                elif raise_on_error:
                     raise e
                 notes.append(msg)
 
             # Validate reading of the data
             if try_reading:
                 try:
-                    validate_reading(data_client, ignore_errors=ignore_errors)
+                    validate_reading(data_client)
                 except Exception as e:
                     errored_keys.append((sname, data_key, str(e)))
                     logger.error(
                         f"Reading validation of '{sname}/{data_key}' failed with error: {e}"
                     )
-                    if raise_on_error:
+                    if any(re.search(ptrn, str(e)) for ptrn in ignore_errors):
+                        logger.warning(f"Ignored reading validation error: {e}")
+                    elif raise_on_error:
                         raise e
-
-            time.sleep(0.1)
 
     if try_reading and (not errored_keys):
         logger.info("Reading validation completed successfully.")
 
     # Update the root metadata with validation notes
-    if notes:
+    for msg in notes:
+        logger.warning(msg)
+    if notes and write_notes:
         existing_notes = root_client.metadata.get("notes", [])
-        root_client.update_metadata(
-            {"notes": existing_notes + notes}, drop_revision=True
-        )
+        # Preserve order, drop duplicates so repeat validation is idempotent.
+        merged_notes = list(dict.fromkeys(existing_notes + notes))
+        if merged_notes != existing_notes:
+            root_client.update_metadata({"notes": merged_notes}, drop_revision=True)
 
     return not errored_keys
 
 
-def validate_reading(data_client, ignore_errors=[]):
+def validate_reading(data_client):
     """Attempt to read data from the given data client to validate data accessibility
 
     Parameters
     ----------
         data_client : tiled.client.ArrayClient or tiled.client.DataFrameClient
             The data client to validate reading from.
-        ignore_errors : list of str, optional
-            List of error messages to ignore during reading validation.
-            Default is an empty list.
 
     Raises
     ------
         ReadingValidationException
             If reading the data fails with an unignored error.
     """
-
-    data_key = data_client.item["id"]
-    sname = data_client.item["attributes"]["ancestors"][-1]  # stream name
 
     if isinstance(data_client, ArrayClient):
         try:
@@ -153,32 +176,23 @@ def validate_reading(data_client, ignore_errors=[]):
             idx_right_bottom = (-1,) * len(data_client.shape)
             data_client[idx_right_bottom]
         except Exception as e:
-            if any([re.search(msg, str(e)) for msg in ignore_errors]):
-                logger.info(f"Ignoring array reading error: {sname}/{data_key}: {e}")
-            else:
-                raise ReadingValidationException(
-                    f"Array reading failed with error: {e}"
-                )
+            raise ReadingValidationException(f"Array reading failed with error: {e}")
 
     elif isinstance(data_client, DataFrameClient):
         try:
             data_client.read()  # try to read the entire table
         except Exception as e:
-            if any([re.search(msg, str(e)) for msg in ignore_errors]):
-                logger.info(f"Ignoring table reading error: {sname}/{data_key}: {e}")
-            else:
-                raise ReadingValidationException(
-                    f"Table reading failed with error: {e}"
-                )
+            raise ReadingValidationException(f"Table reading failed with error: {e}")
 
     else:
+        data_key = data_client.item["id"]
         logger.warning(
             f"Validation of '{data_key=}' is not supported with client of type {type(data_client)}."
         )
 
 
 def validate_structure(data_client, fix_errors=False) -> list[str]:
-    """Validate and optionally fix the structure of the given (array) dataset.
+    """Validate and optionally fix the structure of the given (array) dataset, client-side
 
     Parameters
     ----------
@@ -194,86 +208,194 @@ def validate_structure(data_client, fix_errors=False) -> list[str]:
             A list of human-readable notes describing any fixes applied during validation.
     """
 
-    data_source = data_client.data_sources()[0]
-    uris = [asset.data_uri for asset in data_source.assets]
-    structure = data_client.structure()
-    notes = []
+    valid_data_source, notes = validate_data_source(
+        data_source=data_client.data_sources()[0],
+        fix_errors=fix_errors,
+        metadata=data_client.metadata,
+    )
 
-    # Initialize adapter from uris and determine the structure as read by the adapter
-    adapter_class = ADAPTERS_BY_MIMETYPE[data_source.mimetype]
-    true_structure = adapter_class.from_uris(
-        *uris, **data_source.parameters
-    ).structure()
-    true_data_type = true_structure.data_type
-    true_shape = true_structure.shape
-    true_chunks = true_structure.chunks
-
-    # Validate structure components
-    if structure.shape != true_shape:
-        if not fix_errors:
-            raise ValueError(f"Shape mismatch: {structure.shape} != {true_shape}")
-        else:
-            msg = f"Fixed shape mismatch: {structure.shape} -> {true_shape}"
-            logger.warning(msg)
-            structure.shape = true_shape
-            notes.append(msg)
-
-    if structure.chunks != true_chunks:
-        if not fix_errors:
-            raise ValueError(
-                f"Chunk shape mismatch: {structure.chunks} != {true_chunks}"
-            )
-        else:
-            _true_chunk_shape = tuple(c[0] for c in true_chunks)
-            _chunk_shape = tuple(c[0] for c in structure.chunks)
-            msg = f"Fixed chunk shape mismatch: {_chunk_shape} -> {_true_chunk_shape}"
-            logger.warning(msg)
-            structure.chunks = true_chunks
-            notes.append(msg)
-
-    if structure.data_type != true_data_type:
-        if not fix_errors:
-            raise ValueError(
-                f"Data type mismatch: {structure.data_type} != {true_data_type}"
-            )
-        else:
-            msg = f"Fixed dtype mismatch: {structure.data_type.to_numpy_dtype()} -> {true_data_type.to_numpy_dtype()}"  # noqa
-            logger.warning(msg)
-            structure.data_type = true_data_type
-            notes.append(msg)
-
-    if structure.dims and (len(structure.dims) != len(true_shape)):
-        if not fix_errors:
-            raise ValueError(
-                f"Number of dimension names mismatch for a {len(true_shape)}-dimensional array: {structure.dims}"
-            )  # noqa
-        else:
-            old_dims = structure.dims
-            if len(old_dims) < len(true_shape):
-                structure.dims = (
-                    ("time",)
-                    + old_dims
-                    + tuple(
-                        f"dim{i}" for i in range(len(old_dims) + 1, len(true_shape))
-                    )
-                )
-            else:
-                structure.dims = old_dims[: len(true_shape)]
-            msg = f"Fixed dimension names: {old_dims} -> {structure.dims}"
-            logger.warning(msg)
-            notes.append(msg)
-
-    # Update the data source structure if any fixes were applied
+    # Update the data source on the server if any fixes were applied
     if notes:
-        data_source.structure = structure
+        # Backompatibility: if the server is older than 0.2.4,
+        # it can not accept the "properties" field in the data source.
+        # This can be removed in later releases.
+        if Version(data_client.context.server_info.library_version) < Version("0.2.4"):
+            valid_data_source = {
+                k: v for k, v in asdict(valid_data_source).items() if k != "properties"
+            }
+
         for attempt in retry_context():
             with attempt:
                 response = data_client.context.http_client.put(
                     data_client.uri.replace(
                         "/api/v1/metadata/", "/api/v1/data_source/", 1
                     ),
-                    content=safe_json_dump({"data_source": data_source}),
+                    content=safe_json_dump({"data_source": valid_data_source}),
                 )
         handle_error(response)
+        data_client.refresh()
 
     return notes
+
+
+def validate_data_source(
+    data_source, fix_errors=False, metadata=None, adapters_by_mimetype=None
+) -> tuple[DataSource, list[str]]:
+    """Validate and optionally fix the structure of a data_source
+
+    Parameters
+    ----------
+        data_source: tiled.client.data_source.DataSource
+            The data source whose structure is to be validated.
+        fix_errors : bool, optional
+            Whether to attempt to fix structural errors found during validation.
+            Default is False.
+
+    Returns
+    -------
+        list of str
+            A list of human-readable notes describing any fixes applied during validation.
+    """
+
+    # Ensure the structure is a proper Structure object
+    if isinstance(data_source.structure, dict):
+        data_source.structure = STRUCTURE_TYPES[data_source.structure_family].from_json(
+            data_source.structure
+        )
+
+    # Find an appropriate adapter for this data source and apply custom validation logic
+    adapters_by_mimetype = collections.ChainMap(
+        adapters_by_mimetype or {}, DEFAULT_ADAPTERS_BY_MIMETYPE
+    )
+    adapter_class = adapters_by_mimetype[data_source.mimetype]
+    if hasattr(adapter_class, "validate_data_source"):
+        data_source, notes = adapter_class.validate_data_source(
+            data_source, fix_errors=fix_errors
+        )
+    else:
+        data_source, notes = copy.deepcopy(data_source), []
+    structure = data_source.structure
+
+    # Update the sizes of Assets; raise on failure so callers get an explicit
+    # error rather than a downstream message that masks the root cause.
+    for ast in data_source.assets:
+        try:
+            ast.size = size_from_uri(ast.data_uri)
+        except (FileNotFoundError, OSError, ValueError) as e:
+            raise AssetValidationException(
+                f"Could not determine size of asset {ast.data_uri}: {type(e).__name__}: {e}"
+            ) from e
+
+    # If this is a data source with BytesStructure, we cannot validate it further
+    if isinstance(structure, BytesStructure):
+        return data_source, notes
+
+    # Initialize adapter from uris and determine the structure as read by the adapter
+    uris = [asset.data_uri for asset in data_source.assets]
+    true_structure = adapter_class.from_uris(
+        *uris, **data_source.parameters
+    ).structure()
+    true_data_type = true_structure.data_type
+    true_shape = orig_shape = true_structure.shape
+    true_chunks = orig_chunks = true_structure.chunks
+
+    # Check if this might be StructDtype -- this would affect the shape validation
+    if structure.data_type != true_data_type:
+        if not fix_errors:
+            raise StructureValidationException(
+                f"Data type mismatch: {structure.data_type} != {true_data_type}"
+            )
+
+        elif isinstance(structure.data_type, StructDtype):
+            npdt_s = structure.data_type.to_numpy_dtype()
+            npdt_t = true_data_type.to_numpy_dtype()
+            if isinstance(true_data_type, StructDtype):
+                # Both are structural dtypes: use names from structure, dtypes from file
+                if len(npdt_s.names) != len(npdt_t.names):
+                    raise StructureValidationException(
+                        f"Number of fields mismatch in structured dtype: {len(npdt_s.names)} != {len(npdt_t.names)}"  # noqa
+                    )
+                fields = [
+                    (n, f[0]) for n, f in zip(npdt_s.names, npdt_t.fields.values())
+                ]
+
+            elif isinstance(true_data_type, BuiltinDtype):
+                # All columns appear to be of the same dtype, but expected structured
+                if len(npdt_s.names) != true_shape[-1]:
+                    raise StructureValidationException(
+                        f"Number of fields mismatch in structured dtype: {len(npdt_s.names)} != {true_shape[-1]}"  # noqa
+                    )
+                true_shape = (*true_shape[:-1], 1)
+                true_chunks = (*true_chunks[:-1], (1,))
+                fields = [(n, npdt_t) for n in npdt_s.names]
+
+            true_data_type = StructDtype.from_numpy_dtype(numpy.dtype(fields))
+
+        elif isinstance(true_data_type, StructDtype):
+            # Expected a simple builtin dtype, but the file was parsed as structured;
+            # try to cast as BuiltinDtype if possible (common dtype that matches all fields)
+            npdt_t = true_data_type.to_numpy_dtype()
+            common_dtype = numpy.result_type(*[f[0] for f in npdt_t.fields.values()])
+            true_data_type = BuiltinDtype.from_numpy_dtype(common_dtype)
+
+        # Both structure and file have simple built-in dtypes: just use the file dtype
+        msg = f"Fixed dtype mismatch: {structure.data_type.to_numpy_dtype()} -> {true_data_type.to_numpy_dtype()}"  # noqa
+        structure.data_type = true_data_type
+        notes.append(msg)
+
+    # If this resource has the `frame_per_point`/`multiplier` parameter, the true shape of
+    # the data is expected to be (num_events, multiplier, *rest) and needs to be adjusted,
+    # but only if the original shape in the file is divisible by the multiplier.
+    if multiplier := (metadata or {}).get("frame_per_point"):
+        if not (orig_shape[0] % multiplier):
+            true_shape = (orig_shape[0] // multiplier, multiplier, *orig_shape[1:])
+            true_chunks = (
+                list_summands(true_shape[0], orig_chunks[0][0]),
+                (multiplier,),
+                *orig_chunks[1:],
+            )
+            data_source.properties.update({"chunks": orig_chunks})
+
+    # Update structure components
+    if structure.shape != true_shape:
+        if not fix_errors:
+            raise StructureValidationException(
+                f"Shape mismatch: {structure.shape} != {true_shape}"
+            )
+
+        msg = f"Fixed shape mismatch: {structure.shape} -> {true_shape}"
+        structure.shape = true_shape
+        notes.append(msg)
+
+    if structure.chunks != true_chunks:
+        if not fix_errors:
+            raise StructureValidationException(
+                f"Chunk shape mismatch: {structure.chunks} != {true_chunks}"
+            )
+
+        _true_chunk_shape = tuple(c[0] for c in true_chunks)
+        _chunk_shape = tuple(c[0] for c in structure.chunks)
+        msg = f"Fixed chunk shape mismatch: {_chunk_shape} -> {_true_chunk_shape}"
+        structure.chunks = true_chunks
+        notes.append(msg)
+
+    if structure.dims and (len(structure.dims) != len(true_shape)):
+        if not fix_errors:
+            raise StructureValidationException(
+                "Number of dimension names mismatch for a "
+                f"{len(true_shape)}-dimensional array: {structure.dims}"
+            )
+
+        old_dims = structure.dims
+        if len(old_dims) < len(true_shape):
+            structure.dims = (
+                ("time",)
+                + old_dims
+                + tuple(f"dim{i}" for i in range(len(old_dims) + 1, len(true_shape)))
+            )
+        else:
+            structure.dims = old_dims[: len(true_shape)]
+        msg = f"Fixed dimension names: {old_dims} -> {structure.dims}"
+        notes.append(msg)
+
+    return data_source, notes

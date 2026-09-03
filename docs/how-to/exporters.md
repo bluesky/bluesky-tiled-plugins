@@ -13,6 +13,8 @@ media_types:
     application/json-seq: bluesky_tiled_plugins.exporters:json_seq_exporter
 ```
 
+## Fidelity
+
 Tiled does not store the documents in their original form. It stores a
 consolidated representation of the metadata and data extracted from the
 documents, which enables better read performance. Therefore, the exported

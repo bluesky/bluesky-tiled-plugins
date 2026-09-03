@@ -1,11 +1,16 @@
 import copy
 import itertools
 import logging
+import math
 from collections import defaultdict, deque, namedtuple
 from collections.abc import Callable
-from pathlib import Path
-from typing import Any, cast
+from dataclasses import asdict
+import posixpath
+import re
+from typing import Any, Optional, cast
+import warnings
 
+import httpx
 import numpy
 import pyarrow
 from event_model import (
@@ -38,18 +43,20 @@ from tiled.client.container import Container
 from tiled.client.dataframe import DataFrameClient
 from tiled.client.utils import handle_error, retry_context
 from tiled.structures.core import Spec
-from tiled.utils import safe_json_dump
+from tiled.utils import ensure_uri, safe_json_dump
+from packaging.version import Version
 
-from ..utils import truncate_json_overflow
+from ..utils import truncate_json_overflow, split_table
 from ._dispatcher import Dispatcher
-from ._json_writer import JSONLinesWriter
+from ._json_writer import JSONLinesWriter, JSONDictWriter
+from .validator import ValidationException
 from .consolidators import (
     ConsolidatorBase,
     DataSource,
     Patch,
-    StructureFamily,
     consolidator_factory,
 )
+from ..clients.catalog_of_bluesky_runs import CatalogOfBlueskyRuns
 
 # Aggregate the Event table rows and StreamDatums in batches before writing to Tiled
 BATCH_SIZE = 10000
@@ -57,6 +64,9 @@ BATCH_SIZE = 10000
 # Maximum size of internal arrays from Event docs to write to tabular (SQL) storage; larger arrays will be written
 # as zarr. Set to 0 to write all internal arrays as zarr, and -1 to write all internal arrays to tabular storage.
 MAX_ARRAY_SIZE = 16
+
+# Maximum number of columns in a single table; larger tables will be split into multiple tables
+MAX_TABLE_COLUMNS = 1024
 
 # Disallow using reserved words as data_keys identifiers
 # Related: https://github.com/bluesky/event-model/pull/223
@@ -75,10 +85,14 @@ JSON_TO_NUMPY_DTYPE = {
 MIMETYPE_LOOKUP = defaultdict(
     lambda: "application/octet-stream",
     {
-        "hdf5": "application/x-hdf5",
+        "HDF5": "application/x-hdf5",
+        "AD_HDF5": "application/x-hdf5",
+        "AD_HDF5_SINGLE": "application/x-hdf5",
+        "AD_HDF5_SWMR": "application/x-hdf5",
         "AD_HDF5_SWMR_STREAM": "application/x-hdf5",
         "AD_HDF5_SWMR_SLICE": "application/x-hdf5",
         "PIL100k_HDF5": "application/x-hdf5",
+        "XSP": "application/x-hdf5",
         "XSP3": "application/x-hdf5",
         "XPS3": "application/x-hdf5",
         "XSP3_BULK": "application/x-hdf5",
@@ -100,12 +114,6 @@ MIMETYPE_LOOKUP = defaultdict(
 )
 
 logger = logging.getLogger(__name__)
-
-
-class ValidationError(Exception):
-    """Custom exception for validation errors in Tiled RunWriter."""
-
-    pass
 
 
 def concatenate_stream_datums(*docs: StreamDatum):
@@ -155,12 +163,16 @@ ExternalEventDataReference = namedtuple(
 
 
 class _ConditionalBackup:
-    """Callback that tries to call the primary callback and, if it fails, flushes the buffer to backup callbacks.
+    """Callback to save Bluesky data if the primary callback fails.
 
-    Once an error has been encountererd in the primary callback, all subsequent documents would be sent to the
-    backup callbacks as well.
+    Callback that tries to call the primary callback and,
+    if it fails, flushes the buffer to backup callbacks.
 
-    This callback is intended to be used with a `RunRouter` and process documents from a single Bluesky run.
+    Once an error has been encountererd in the primary callback,
+    all subsequent documents would be sent to the backup callbacks as well.
+
+    This callback is intended to be used with a `RunRouter` and process
+    documents from a single Bluesky run.
     """
 
     def __init__(
@@ -208,8 +220,9 @@ class RunNormalizer(DocumentRouter):
     ):
         """Callback for updating Bluesky documents to their latest schema.
 
-        This callback can be used to subscribe additional consumers that require the updated documents.
-        Returns a shallow copy of the document to avoid modifying the original one.
+        This callback can be used to subscribe additional consumers that require
+        the updated documents. Returns a shallow copy of the document to avoid modifying
+        the original one.
 
         Parameters
         ----------
@@ -219,15 +232,18 @@ class RunNormalizer(DocumentRouter):
             The keys are document names (e.g., "start", "stop", "descriptor", etc.), and the values
             are functions that take a document as input and return a modified document.
         spec_to_mimetype : dict[str, str], optional
-            A dictionary mapping spec names to MIME types. This is used to convert `Resource` documents
-            to the latest `StreamResource` schema.
+            A dictionary mapping spec names to MIME types. This is used to convert `Resource`
+            documents to the latest `StreamResource` schema.
             The supplied dictionary updates the default `MIMETYPE_LOOKUP` dictionary.
         """
 
         self._token_refs: dict[str, Callable] = {}
         self.dispatcher = Dispatcher()
         self.patches = patches or {}
-        self.spec_to_mimetype = MIMETYPE_LOOKUP | (spec_to_mimetype or {})
+        self.spec_to_mimetype = defaultdict(
+            lambda: "application/octet-stream",
+            {**MIMETYPE_LOOKUP, **(spec_to_mimetype or {})},
+        )
 
         self._next_frame_index: dict[tuple[str, str], dict[str, int]] = defaultdict(
             lambda: {"carry": 0, "index": 0}
@@ -269,22 +285,47 @@ class RunNormalizer(DocumentRouter):
 
             # Convert the Resource (or old StreamResource) document to a StreamResource document
             resource_dict = cast("dict", doc)
-            stream_resource_doc["mimetype"] = self.spec_to_mimetype[
-                resource_dict.pop("spec")
-            ]
+            resource_spec = resource_dict.pop("spec")
+            stream_resource_doc["mimetype"] = self.spec_to_mimetype[resource_spec]
             stream_resource_doc["parameters"] = resource_dict.pop("resource_kwargs", {})
-            file_path = Path(resource_dict.pop("root").strip("/")).joinpath(
-                resource_dict.pop("resource_path").strip("/")
-            )
-            stream_resource_doc["uri"] = "file://localhost/" + str(file_path).lstrip(
-                "/"
-            )
+
+            # Compose `root` and `resource_path` into a single path, then canonicalize as a URI.
+            # A trailing `/` on `resource_path` is meaningful -- it signals the directory-URI convention
+            # that the template will later append a filename to -- but `Path.absolute()` inside
+            # `ensure_uri` normalizes it away, so we preserve and reattach it explicitly.
+            resource_path = resource_dict.pop("resource_path", "")
+            if root := resource_dict.pop("root", None):
+                head = "/" if resource_path.startswith("/") else ""
+                resource_path = posixpath.join(root + head, resource_path.lstrip("/"))
+            tail = "/" if resource_path.endswith("/") else ""
+            stream_resource_doc["uri"] = ensure_uri(resource_path).rstrip("/") + tail
+
+            # Keep the Bluesky spec name in parameters
+            stream_resource_doc["parameters"]["spec"] = resource_spec
+
+            # Add the internal path within HDF5 files to the parameters for known Bluesky specs
+            existing_dataset = stream_resource_doc["parameters"].get("dataset")
+            if resource_spec in {"AD_HDF5", "AD_HDF5_SINGLE", "AD_HDF5_SWMR", "HDF5"}:
+                stream_resource_doc["parameters"]["dataset"] = (
+                    existing_dataset or "/entry/data/data"
+                )
+            elif resource_spec in {"XSP", "XSP3", "TPX_HDF5"}:
+                stream_resource_doc["parameters"]["dataset"] = (
+                    existing_dataset or "/entry/instrument/detector/data"
+                )
+
+        # Rename "frame_per_point" to a more recent (yet also deprecated) "multiplier"
+        if val := stream_resource_doc["parameters"].pop("frame_per_point", None):
+            stream_resource_doc["parameters"]["multiplier"] = val
 
         # Ensure that the internal path within HDF5 files is referenced with "dataset" parameter
         if stream_resource_doc["mimetype"] == "application/x-hdf5":
             stream_resource_doc["parameters"]["dataset"] = stream_resource_doc[
                 "parameters"
-            ].pop("path", stream_resource_doc["parameters"].pop("dataset", ""))
+            ].pop(
+                "path",
+                stream_resource_doc["parameters"].pop("dataset", ""),
+            )
 
         # Ensure that only the necessary fields are present in the StreamResource document
         stream_resource_doc["data_key"] = stream_resource_doc.get("data_key", "")
@@ -326,16 +367,22 @@ class RunNormalizer(DocumentRouter):
         # Some Datums contain datum_kwargs and the 'frame' field, which indicates the last index of the
         # frame. This should take precedence over the 'seq_num' field in the Event document. Keep the
         # last frame index in memory, since next Datums may refer to more than one frame (it is
-        # assumed that Events always refer to a single frame).
+        # assumed that Events always refer to a single frame). If `point_number` is provided in the
+        # datum_kwargs, use it as the index.
         # There are cases when the frame_index is reset during the scan (e.g. if Datums for the same
         # data_key belong to different Resources), so the 'carry' field is used to keep track of the
         # previous frame index.
+        # In case when the index needs to RESET for each Resource, the `indices` dictionary should be
+        # included in the datum_kwargs directly.
+
+        sres_uid = datum_doc["resource"]
         datum_kwargs = datum_doc.get("datum_kwargs", {})
-        frame = datum_kwargs.pop("frame", None)
-        if frame is not None:
-            desc_name = self._desc_name_by_uid[
-                desc_uid
-            ]  # Name of the descriptor (stream)
+        if indices := datum_kwargs.pop("indices", None):
+            index_start, index_stop = indices["start"], indices["stop"]
+        elif (point_number := datum_kwargs.pop("point_number", None)) is not None:
+            index_start, index_stop = point_number, point_number + 1
+        elif (frame := datum_kwargs.pop("frame", None)) is not None:
+            desc_name = self._desc_name_by_uid[desc_uid]
             _next_index = self._next_frame_index[(desc_name, data_key)]
             index_start = sum(_next_index.values())
             _next_index["index"] = frame + 1
@@ -349,12 +396,12 @@ class RunNormalizer(DocumentRouter):
         indices = StreamRange(start=index_start, stop=index_stop)
         seq_nums = StreamRange(start=index_start + 1, stop=index_stop + 1)
 
-        # produce the Resource document, if needed (add data_key to match the StreamResource schema)
-        # Emit a copy of the StreamResource document with a new uid; this allows to account for cases
-        # where one Resource is used by several data streams with different data_keys and datum_kwargs.
+        # Produce the Resource document, if needed (add data_key to match the StreamResource schema)
+        # Emit a copy of the StreamResource document with a new uid scoped by
+        # (resource, descriptor, data_key) so multiple descriptors that reference the same Resource
+        # each get their own StreamResource and land on their own node in Tiled.
         sres_doc = None
-        sres_uid = datum_doc["resource"]
-        new_sres_uid = sres_uid + "-" + data_key
+        new_sres_uid = f"{sres_uid}-{desc_uid}-{data_key}"
         if (sres_uid in self._sres_cache) and (new_sres_uid not in self._emitted):
             sres_doc = copy.deepcopy(self._sres_cache[sres_uid])
             sres_doc["data_key"] = data_key
@@ -373,13 +420,13 @@ class RunNormalizer(DocumentRouter):
         return sres_doc, sdat_doc
 
     def start(self, doc: RunStart):
-        doc = copy.copy(doc)
+        doc = copy.deepcopy(doc)
         if patch := self.patches.get("start"):
             doc = patch(doc)
         self.emit(DocumentNames.start, doc)
 
     def stop(self, doc: RunStop):
-        doc = copy.copy(doc)
+        doc = copy.deepcopy(doc)
         if patch := self.patches.get("stop"):
             doc = patch(doc)
 
@@ -412,15 +459,18 @@ class RunNormalizer(DocumentRouter):
         # Rename data_keys that use reserved words, "time" and "seq_num"
         for name in RESERVED_DATA_KEYS:
             if name in doc["data_keys"].keys():
-                if f"_{name}" in doc["data_keys"].keys():
+                if f"{name}_" in doc["data_keys"].keys():
                     raise ValueError(
-                        f"Cannot rename {name} to _{name} because it already exists"
+                        f"Cannot rename {name} to {name}_ because it already exists"
                     )
-                doc["data_keys"][f"_{name}"] = doc["data_keys"].pop(name)
+                doc["data_keys"][f"{name}_"] = doc["data_keys"].pop(name)
                 for obj_data_keys_list in doc.get("object_keys", {}).values():
                     if name in obj_data_keys_list:
                         obj_data_keys_list.remove(name)
-                        obj_data_keys_list.append(f"_{name}")
+                        obj_data_keys_list.append(f"{name}_")
+                self.notes.append(
+                    f"Renamed data_key '{name}' to '{name}_' in stream {doc['name']}"
+                )
 
         # Rename some fields (in-place) to match the current schema for the descriptor
         # Loop over all dictionaries that specify data_keys (both event data_keys or configuration data_keys)
@@ -446,6 +496,10 @@ class RunNormalizer(DocumentRouter):
             ):
                 data_keys_spec["dtype_numpy"] = dtype_numpy
 
+            # Ensure that shape is not None; otherwise, set it to an empty tuple
+            if "shape" in data_keys_spec and data_keys_spec.get("shape") is None:
+                data_keys_spec["shape"] = ()
+
         # Ensure that all event data_keys have object_name assigned, if known (for consistency)
         # If "object_keys" are not present, do not reconstruct them -- they are optional
         for obj_name, data_keys_list in doc.get("object_keys", {}).items():
@@ -462,9 +516,9 @@ class RunNormalizer(DocumentRouter):
         )
         for key in self._ext_keys:
             if key in data_keys:
-                data_keys[key]["external"] = data_keys[key].pop(
-                    "external", ""
-                )  # Make sure the value is not None
+                # Make sure the value of "external" is not None
+                if data_keys[key].get("external") is None:
+                    data_keys[key]["external"] = ""
 
         # Keep a reference to the descriptor name (stream) by its uid
         self._desc_name_by_uid[doc["uid"]] = doc["name"]
@@ -481,10 +535,10 @@ class RunNormalizer(DocumentRouter):
         # Rename data_keys that use reserved words, "time" and "seq_num"
         for name in RESERVED_DATA_KEYS:
             if name in doc["data"].keys():
-                doc["data"][f"_{name}"] = doc["data"].pop(name)
-                doc["timestamps"][f"_{name}"] = doc["timestamps"].pop(name)
-            if name in doc["filled"].keys():
-                doc["filled"][f"_{name}"] = doc["filled"].pop(name)
+                doc["data"][f"{name}_"] = doc["data"].pop(name)
+                doc["timestamps"][f"{name}_"] = doc["timestamps"].pop(name)
+            if name in doc.get("filled", {}).keys():
+                doc["filled"][f"{name}_"] = doc["filled"].pop(name)
 
         # Part 1. ----- Internal Data -----
         # Emit a new Event with _internal_ data: select only keys without 'external' flag or those that are filled
@@ -527,18 +581,19 @@ class RunNormalizer(DocumentRouter):
                 self._ext_ref_cache.append(missing)
 
     def resource(self, doc: Resource):
-        doc = copy.copy(doc)
+        doc = copy.deepcopy(doc)
         if patch := self.patches.get("resource"):
             doc = patch(doc)
 
         # Keep a reference to the spec of this Resource, if present
-        self._specs_by_resource_uid[doc["uid"]] = doc.get("spec")
+        doc["spec"] = doc.get("spec", "").upper()
+        self._specs_by_resource_uid[doc["uid"]] = doc["spec"]
 
         # Convert the Resource document to StreamResource format
         self._sres_cache[doc["uid"]] = self._convert_resource_to_stream_resource(doc)
 
     def stream_resource(self, doc: StreamResource):
-        doc = copy.copy(doc)
+        doc = copy.deepcopy(doc)
         if patch := self.patches.get("stream_resource"):
             doc = patch(doc)
 
@@ -547,13 +602,13 @@ class RunNormalizer(DocumentRouter):
         self.emit(DocumentNames.stream_resource, doc)
 
     def stream_datum(self, doc: StreamDatum):
-        doc = copy.copy(doc)
+        doc = copy.deepcopy(doc)
         if patch := self.patches.get("stream_datum"):
             doc = patch(doc)
         self.emit(DocumentNames.stream_datum, doc)
 
     def datum(self, doc: Datum):
-        doc = copy.copy(doc)
+        doc = copy.deepcopy(doc)
         # Mark the Datum document with the spec of the corresponding Resource, if known
         if spec := self._specs_by_resource_uid.get(doc["resource"]):
             doc["datum_kwargs"] = doc.get("datum_kwargs", {}) | {"_resource_spec": spec}
@@ -597,6 +652,7 @@ class _RunWriter(DocumentRouter):
         batch_size: int = BATCH_SIZE,
         max_array_size: int = MAX_ARRAY_SIZE,
         validate: bool = False,
+        ignore_errors: Optional[list[str]] = None,
     ):
         """Write documents from a single Bluesky Run into Tiled.
 
@@ -629,19 +685,48 @@ class _RunWriter(DocumentRouter):
         self._stream_resource_cache: dict[str, StreamResource] = {}
         self._consolidators: dict[str, ConsolidatorBase] = {}
         self._internal_data_cache: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        self._external_data_cache: dict[
-            str, StreamDatum
-        ] = {}  # sres_uid : (concatenated) StreamDatum
-        self._int_array_keys: dict[str, set[str]] = defaultdict(
-            set
-        )  # data_keys with array data by desc_name
+        # sres_uid : (concatenated) StreamDatum
+        self._external_data_cache: dict[str, StreamDatum] = {}
+        # data_keys corresponding to internal dxata written as arrays, by desc_name
+        self._int_array_keys: dict[str, set[str]] = defaultdict(set)
+        # data_keys with array data of inconsistent length, by desc_name
+        self._int_ragged_array_keys: dict[str, set[str]] = defaultdict(set)
+        # Mapping of dimension size -> shared dimension name for internal arrays,
+        # by desc_name, so equal-sized dimensions align in the xarray Dataset.
+        self._int_dims_names: dict[str, dict[int, str]] = defaultdict(dict)
         self._batch_size: int = batch_size
-        self._max_array_size: int = (
-            max_array_size  # Max size of arrays to write to tabular storage
-        )
+        self._max_array_size: int = max_array_size  # Max array size in SQL
         self._validate: bool = validate
+        self.ignore_errors = ignore_errors or []
         self.data_keys: dict[str, DataKey] = {}
         self.access_tags: list[str] | None = None
+        self.notes: list[str] = []
+
+    def _internal_dims(
+        self, desc_name: str, shape: tuple[int | None, ...]
+    ) -> tuple[str, ...]:
+        """Return dimension names for an internal array.
+
+        The leading (event) dimension is always `time`. Each subsequent
+        dimension of a known size is named after that size, reusing a name for
+        every recurrence of the size across all internal arrays in the stream,
+        so equal-sized dimensions align in the xarray Dataset while different
+        sizes stay distinct; these use a `dim_int_{i}` prefix. A dimension of
+        unknown size (`None`, i.e. a ragged/variable-length dimension) can not
+        be shared and is named `dim_rgd_{axis}` per array by its axis position.
+        Both prefixes distinguish internal dimensions from external (regular)
+        dimension names.
+        """
+        names = self._int_dims_names[desc_name]
+        dims = ["time"]
+        for axis, size in enumerate(shape[1:], start=1):
+            if size is None:
+                dims.append(f"dim_rgd_{axis}")
+                continue
+            if size not in names:
+                names[size] = f"dim_int_{len(names) + 1}"
+            dims.append(names[size])
+        return tuple(dims)
 
     def _write_internal_data(
         self, data_cache: list[dict[str, Any]], desc_node: Container
@@ -651,53 +736,151 @@ class _RunWriter(DocumentRouter):
         desc_name = desc_node.item["id"]  # Name of the descriptor (stream)
         # 1. Write internal array data, if any; remove it from the tabular data
         for key in self._int_array_keys[desc_name]:
-            array = numpy.array([row.pop(key) for row in data_cache if key in row])
-            if not (arr_client := self._internal_arrays.get(f"{desc_name}/{key}")):
-                # Create a new "internal" array data node and write the initial piece of data
-                metadata = truncate_json_overflow(self.data_keys.get(key, {}))
-                dims = ("time",) + tuple(f"dim_{i}" for i in range(1, array.ndim))
+            arr_lst = [row[key] for row in data_cache if key in row]
+            if not arr_lst:
+                # No data received for this key in the current batch (e.g. it was
+                # supplied out-of-band as an external stream resource); nothing to write.
+                continue
+
+            # Pad the arrays with NaNs to make them the same length if necessary
+            min_len, max_len = (
+                min(len(row) for row in arr_lst),
+                max(len(row) for row in arr_lst),
+            )
+            if min_len != max_len:
+                arr_lst = [row + [numpy.nan] * (max_len - len(row)) for row in arr_lst]
+                msg = (
+                    f"Array lengths for key '{key}' in stream '{desc_name}' are not consistent: "
+                    f"min={min_len}, max={max_len}; the arrays are padded with NaNs."
+                )
+                logger.warning(msg)
+                self.notes.append(msg)
+
+            # Build the numpy array for this batch. For an existing node reuse its
+            # dtype; otherwise take the declared dtype, letting numpy infer it
+            # (e.g. a fixed-width string dtype) when the declared dtype is `Object`.
+            arr_client = self._internal_arrays.get(f"{desc_name}/{key}")
+            metadata = truncate_json_overflow(self.data_keys.get(key, {}))
+            dtype = (
+                arr_client.dtype
+                if arr_client is not None
+                else (metadata.get("dtype_numpy") or None)
+            )
+            if dtype is not None and numpy.dtype(dtype).kind == "O":
+                dtype = None
+            try:
+                array = numpy.array(arr_lst, dtype=dtype)
+            except ValueError as e:
+                logger.error(
+                    f"Error creating numpy array for key '{key}' in stream '{desc_name}': {e}."
+                )
+                array = numpy.array(arr_lst)
+                logger.warning(f"Falling back to default dtype '{array.dtype}'")
+
+            # A zero-length dimension can not be stored as a zarr array because
+            # zarr can not chunk a zero-length dimension. Rather than fail the write
+            # for the whole run, leave the values in the tabular data so they are
+            # stored in the SQL table with their original dtype.
+            if 0 in array.shape:
+                msg = (
+                    f"Internal array data for key '{key}' in stream '{desc_name}' has a "
+                    f"zero-length dimension (shape {array.shape}) and can not be stored "
+                    f"as a zarr array; it is stored in the internal table instead."
+                )
+                logger.warning(msg)
+                self.notes.append(msg)
+                continue
+
+            # The array is written as a zarr node, so remove it from the tabular data.
+            for row in data_cache:
+                row.pop(key, None)
+
+            # Create a new "internal" array data node or update the existing one
+            if arr_client is None:
+                metadata["dtype_numpy"] = str(array.dtype)
                 arr_client = desc_node.write_array(
                     array,
                     key=key,
                     metadata=metadata,
-                    dims=dims,
+                    dims=self._internal_dims(desc_name, array.shape),
+                    access_tags=self.access_tags,
+                )
+
+                self._internal_arrays[f"{desc_name}/{key}"] = arr_client
+                self.notes.append(
+                    f"Internal array data for '{key}' in stream '{desc_name}' written as zarr."
+                )
+            else:
+                arr_client.patch(
+                    array,
+                    offset=arr_client.shape[:1],
+                    extend=True,
+                )
+
+        # 2. Write internal ragged array data, if any; remove it from the tabular data
+        for key in self._int_ragged_array_keys[desc_name]:
+            from tiled.structures.ragged import make_ragged_array
+
+            arr_lst = [row.pop(key) for row in data_cache if key in row]
+            shape = (len(arr_lst), *self.data_keys[key].get("shape", ()))
+            array = make_ragged_array(arr_lst, shape=shape)
+
+            # Create a new ragged array data node or update the existing one
+            if not (arr_client := self._internal_arrays.get(f"{desc_name}/{key}")):
+                metadata = truncate_json_overflow(self.data_keys.get(key, {}))
+                arr_client = desc_node.write_ragged(
+                    array,
+                    key=key,
+                    metadata=metadata,
+                    dims=self._internal_dims(desc_name, shape),
                     access_tags=self.access_tags,
                 )
                 self._internal_arrays[f"{desc_name}/{key}"] = arr_client
+                self.notes.append(
+                    f"Internal data for '{key}' in stream '{desc_name}' written as ragged array."
+                )
             else:
-                arr_client.patch(array, offset=arr_client.shape[:1], extend=True)
+                arr_client.patch(array, offset=arr_client.shape[0], extend=True)
 
-        # 2. Write internal tabular data; all data_keys for arrays have been removed from data_cache on step 1
+        # 3. Write internal tabular data; all data_keys for arrays have been removed from data_cache on step 1
         if not (table := pyarrow.Table.from_pylist(data_cache)):
             return  # Nothing to write
 
-        if not (df_client := self._internal_tables.get(desc_name)):
-            # Create a new "internal" data node and write the initial piece of data
-            metadata = {
-                k: v for k, v in self.data_keys.items() if k in table.column_names
-            }
-            metadata = truncate_json_overflow(metadata)
-            # Replace any nulls in the schema with string type
-            schema = copy.copy(table.schema)
-            for i, field in enumerate(table.schema):
-                if pyarrow.types.is_null(field.type):
-                    schema = schema.set(i, field.with_type(pyarrow.string()))
-                elif pyarrow.types.is_list(field.type) and pyarrow.types.is_null(
-                    field.type.value_type
-                ):
-                    schema = schema.set(
-                        i, field.with_type(pyarrow.list_(pyarrow.string()))
-                    )
-            # Initialize the table and keep a reference to the client
-            df_client = desc_node.create_appendable_table(
-                schema=schema,
-                key="internal",
-                metadata=metadata,
-                access_tags=self.access_tags,
-            )
-            self._internal_tables[desc_name] = df_client
+        suffix_and_tables = [("", table)]
+        if table.num_columns > MAX_TABLE_COLUMNS:
+            suffix_and_tables = [
+                (f"_{i}", tab)
+                for i, tab in enumerate(split_table(table, MAX_TABLE_COLUMNS))
+            ]
 
-        df_client.append_partition(0, table)
+        for suffix, table in suffix_and_tables:
+            if not (df_client := self._internal_tables.get(f"{desc_name}{suffix}")):
+                # Create a new "internal" data node and write the initial piece of data
+                metadata = {
+                    k: v for k, v in self.data_keys.items() if k in table.column_names
+                }
+                metadata = truncate_json_overflow(metadata)
+                # Replace any nulls in the schema with string type
+                schema = copy.copy(table.schema)
+                for i, field in enumerate(table.schema):
+                    if pyarrow.types.is_null(field.type):
+                        schema = schema.set(i, field.with_type(pyarrow.string()))
+                    elif pyarrow.types.is_list(field.type) and pyarrow.types.is_null(
+                        field.type.value_type
+                    ):
+                        schema = schema.set(
+                            i, field.with_type(pyarrow.list_(pyarrow.string()))
+                        )
+                # Initialize the table and keep a reference to the client
+                df_client = desc_node.create_appendable_table(
+                    schema=schema,
+                    key=f"internal{suffix}",
+                    metadata=metadata,
+                    access_tags=self.access_tags,
+                )
+                self._internal_tables[f"{desc_name}{suffix}"] = df_client
+
+            df_client.append_partition(0, table)
 
     def _update_consolidator(self, doc: StreamDatum):
         """Register the external data from StreamDatum in the Consolidator"""
@@ -711,9 +894,16 @@ class _RunWriter(DocumentRouter):
         self, node: BaseClient, data_source: DataSource, patch: Patch | None = None
     ):
         """Update DataSource of the node in Tiled corresponding to the StreamResource"""
-        data_source.id = node.data_sources()[
-            0
-        ].id  # ID of the existing DataSource record
+        # Get and set the ID of the existing DataSource record
+        data_source.id = node.data_sources()[0].id
+
+        # Backompatibility: if the server is older than 0.2.4,
+        # it can not accept the "properties" field in the data source.
+        # This can be removed in later releases.
+        if Version(node.context.server_info.library_version) < Version("0.2.4"):
+            data_source = {
+                k: v for k, v in asdict(data_source).items() if k != "properties"
+            }
 
         for attempt in retry_context():
             with attempt:
@@ -775,37 +965,101 @@ class _RunWriter(DocumentRouter):
                 sres_node, consolidator.get_data_source(), patch=final_patch
             )
 
-        # Validate structure for some StreamResource nodes, select unique pairs of (sres_node, consolidator)
-        notes = []
+        # Select unique pairs of (sres_node, consolidator)
         node_and_cons = {
             (sres_node, self._consolidators[sres_uid])
             for sres_uid, sres_node in self._sres_nodes.items()
         }
-        if self._validate:
-            for sres_node, consolidator in node_and_cons:
-                title = f"Validation of data key '{sres_node.item['id']}'"
-                try:
-                    _notes = consolidator.validate(fix_errors=True)
-                    notes.extend([title + ": " + note for note in _notes])
-                except Exception as e:
-                    msg = (
-                        f"{type(e).__name__}: "
-                        + str(e).replace("\n", " ").replace("\r", "").strip()
-                    )
-                    msg = title + f" failed with error: {msg}"
-                    raise ValidationError(msg) from e
-                self._update_data_source_for_node(
-                    sres_node, consolidator.get_data_source()
-                )
+        # If there is any metadata on this consolidator (e.g. `frame_per_point`), update the node
+        for sres_node, consolidator in node_and_cons:
+            if cons_md := consolidator.metadata:
+                sres_node.update_metadata(metadata=cons_md, drop_revision=True)
 
-        # Write the stop document to the metadata
-        for key in self._internal_arrays.keys():
-            notes.append(f"Internal array data in '{key}' written as zarr format.")
-        notes = (
-            doc.pop("_run_normalizer_notes", []) + notes
-        )  # Retrieve notes from the normalizer, if any
-        md_update = {"stop": doc, **({"notes": notes} if notes else {})}
-        self.root_node.update_metadata(metadata=md_update, drop_revision=True)
+        # Validate the Structure of the data for each external resource, if requested
+        # Try validating directly on the server, first; if endpoint is not available, do it locally
+        try:
+            if self._validate:
+                for attempt in retry_context():
+                    with attempt:
+                        response = self.root_node.context.http_client.post(
+                            self.root_node.uri.replace(
+                                "/api/v1/metadata/", "/custom/validate/", 1
+                            ),
+                            params={"fix": True},
+                            content=safe_json_dump(
+                                {"ignore_errors": self.ignore_errors}
+                            ),
+                        )
+
+                try:
+                    content = handle_error(response).json()
+                    _notes = content.get("notes", [])
+                    if content.get("valid"):
+                        self.notes.extend(_notes)
+                        for note in _notes:
+                            warnings.warn("Remote validation: " + note, stacklevel=2)
+                        if not _notes:
+                            logger.info(
+                                "Remote validation successful for all external data."
+                            )
+                    else:
+                        msg = "Remote validation failed: " + "; ".join(_notes)
+                        raise ValidationException(msg, self.root_node.item["id"])
+
+                except httpx.HTTPStatusError as e:
+                    # Backcompatibility: if the server does not support validation endpoint,
+                    # it will return 404 Not Found error; in this case, attempt to validate
+                    # the data structure locally with the Consolidator.
+
+                    if response.status_code == httpx.codes.NOT_FOUND:
+                        warnings.warn(
+                            "Tiled server does not support remote validation. "
+                            "Attempting to validate the data structure locally."
+                        )
+                        for sres_node, consolidator in node_and_cons:
+                            title = f"Validation of '{sres_node.item['id']}'"
+                            try:
+                                _notes = consolidator.validate(fix_errors=True)
+                                self.notes.extend(
+                                    [title + ": " + note for note in _notes]
+                                )
+                            except Exception as e:
+                                msg = (
+                                    f"{type(e).__name__}: "
+                                    + str(e)
+                                    .replace("\n", " ")
+                                    .replace("\r", "")
+                                    .strip()
+                                )
+                                msg = title + f" failed with error: {msg}"
+                                if any(
+                                    re.search(ptrn, msg) for ptrn in self.ignore_errors
+                                ):
+                                    warnings.warn(msg)
+                                else:
+                                    raise ValidationException(
+                                        msg, sres_node.item["id"]
+                                    ) from e
+                            self._update_data_source_for_node(
+                                sres_node, consolidator.get_data_source()
+                            )
+                    else:
+                        msg = (
+                            "Remote validation request failed with status code "
+                            f"{response.status_code}: {response.text}"
+                        )
+                        raise ValidationException(msg, self.root_node.item["id"]) from e
+
+        except Exception:
+            raise
+
+        finally:
+            # Write the stop document to the metadata, include notes from the normalizer, if any
+            notes = list(
+                dict.fromkeys(doc.pop("_run_normalizer_notes", []) + self.notes)
+            )
+            md_update = {"stop": doc, **({"notes": notes} if notes else {})}
+            self.root_node.update_metadata(metadata=md_update, drop_revision=True)
 
     def descriptor(self, doc: EventDescriptor):
         desc_name = doc["name"]  # Name of the descriptor/stream
@@ -827,14 +1081,19 @@ class _RunWriter(DocumentRouter):
                 access_tags=self.access_tags,
             ).base
 
-            # Keep track of data_keys for internal array data to be written as zarr, if any
+            # Keep track of data_keys for internal array data to be written as zarr or ragged, if any
             for key, val in doc.get("data_keys", {}).items():
-                if (
-                    ("external" not in val.keys())
-                    and (val.get("dtype") == "array")
-                    and (0 <= self._max_array_size < sum(val.get("shape", [])))
-                ):
-                    self._int_array_keys[desc_name].add(key)
+                if ("external" not in val.keys()) and (val.get("dtype") == "array"):
+                    if None in val.get("shape", ()):
+                        self._int_ragged_array_keys[desc_name].add(key)
+                    elif 0 <= self._max_array_size < math.prod(val.get("shape", ())):
+                        self._int_array_keys[desc_name].add(key)
+                    elif (dtype_numpy := val.get("dtype_numpy")) and numpy.dtype(
+                        dtype_numpy
+                    ).kind in {"U", "S", "O"}:
+                        # String/bytes/object arrays can not be stored in SQL in a
+                        # readable form, so always write them as zarr arrays.
+                        self._int_array_keys[desc_name].add(key)
         else:
             # Rare Case: This new descriptor likely updates stream configs mid-experiment
             # We assume tha the full descriptor has been already received, so we don't need to store everything
@@ -914,10 +1173,11 @@ class _RunWriter(DocumentRouter):
                 consolidator.update_from_stream_resource(sres_doc)
             else:
                 consolidator = consolidator_factory(sres_doc, desc_node.metadata)
+                data_source = consolidator.get_data_source()
                 sres_node = desc_node.new(
                     key=consolidator.data_key,
-                    structure_family=StructureFamily.array,
-                    data_sources=[consolidator.get_data_source()],
+                    structure_family=data_source.structure_family,
+                    data_sources=[data_source],
                     metadata={},
                     specs=[],
                     access_tags=self.access_tags,
@@ -969,11 +1229,13 @@ class TiledWriter:
         patches: dict[str, Callable] | None = None,
         spec_to_mimetype: dict[str, str] | None = None,
         backup_directory: str | None = None,
+        backup_dictionary: dict | None = None,
         batch_size: int = BATCH_SIZE,
         max_array_size: int = MAX_ARRAY_SIZE,
         validate: bool = False,
+        ignore_errors: Optional[list[str]] = None,
     ):
-        """Callback for write metadata and data from Bluesky documents into Tiled.
+        """Callback for writing metadata and data from Bluesky documents into Tiled.
 
         This callback relies on the `RunRouter` to route documents from one or more runs into
         independent instances of the `_RunWriter` callback. The `RunRouter` is responsible for
@@ -1013,26 +1275,36 @@ class TiledWriter:
             to Tiled immediately after they are received.
         validate : bool
             If True, validate all data sources before writing to Tiled. This requires the access to the
-            files on the client.
+            files on the client or remote validation endpoint to be enabled on the server.
         """
 
         self.client = client.include_data_sources()
         self.patches = patches or {}
         self.spec_to_mimetype = spec_to_mimetype or {}
         self.backup_directory = backup_directory
+        self.backup_dictionary = backup_dictionary
         self._normalizer = normalizer
         self._run_router = RunRouter([self._factory])
         self._batch_size = batch_size
         self._max_array_size = max_array_size
         self._validate = validate
+        self.ignore_errors = ignore_errors or []
 
     def _factory(self, name, doc):
-        """Factory method to create a callback for writing a single run into Tiled."""
+        """Factory method to create a callback for writing a single run into Tiled.
+
+        If `normalizer` is specified, create a RunNormalizer callback to update documents
+        to the latest schema before writing them to Tiled.
+
+        If `backup_directory` or `backup_dictionary` is specified, create a JSONLinesWriter
+        or JSONDictWriter callbacks to back up the documents.
+        """
         cb = run_writer = _RunWriter(
             self.client,
             batch_size=self._batch_size,
             max_array_size=self._max_array_size,
             validate=self._validate,
+            ignore_errors=self.ignore_errors,
         )
 
         if self._normalizer:
@@ -1042,9 +1314,13 @@ class TiledWriter:
             )
             cb.subscribe(run_writer)
 
+        backup_callbacks = []
         if self.backup_directory:
-            # If backup_directory is specified, create a conditional backup callback writing documents to JSONLines
-            cb = _ConditionalBackup(cb, [JSONLinesWriter(self.backup_directory)])
+            backup_callbacks.append(JSONLinesWriter(self.backup_directory))
+        if self.backup_dictionary is not None:
+            backup_callbacks.append(JSONDictWriter(self.backup_dictionary))
+        if backup_callbacks:
+            cb = _ConditionalBackup(cb, backup_callbacks)
 
         return [cb], []
 
@@ -1058,6 +1334,8 @@ class TiledWriter:
         spec_to_mimetype: dict[str, str] | None = None,
         backup_directory: str | None = None,
         batch_size: int = BATCH_SIZE,
+        max_array_size: int = MAX_ARRAY_SIZE,
+        validate: bool = False,
         **kwargs,
     ):
         client = from_uri(uri, **kwargs)
@@ -1068,6 +1346,8 @@ class TiledWriter:
             spec_to_mimetype=spec_to_mimetype,
             backup_directory=backup_directory,
             batch_size=batch_size,
+            max_array_size=max_array_size,
+            validate=validate,
         )
 
     @classmethod
@@ -1080,6 +1360,8 @@ class TiledWriter:
         spec_to_mimetype: dict[str, str] | None = None,
         backup_directory: str | None = None,
         batch_size: int = BATCH_SIZE,
+        max_array_size: int = MAX_ARRAY_SIZE,
+        validate: bool = False,
         **kwargs,
     ):
         client = from_profile(profile, **kwargs)
@@ -1090,7 +1372,63 @@ class TiledWriter:
             spec_to_mimetype=spec_to_mimetype,
             backup_directory=backup_directory,
             batch_size=batch_size,
+            max_array_size=max_array_size,
+            validate=validate,
         )
+
+    def __call__(self, name, doc):
+        self._run_router(name, doc)
+
+
+class _RunInserter:
+    def __init__(self, client: CatalogOfBlueskyRuns):
+        self._client = client
+
+    def __call__(self, name, doc):
+        self._client.post_document(name, doc)
+
+
+class TiledInserter:
+    """Callback for _inserting_ plain documents into Tiled
+
+    This mimics the behavior of Databroker's `insert` method, which allows to insert
+    documents into MongoDB collections without normalization or validation.
+    """
+
+    def __init__(
+        self,
+        client: CatalogOfBlueskyRuns,
+        name: str,
+        *,
+        backup_directory: str | None = None,
+        backup_dictionary: dict | None = None,
+    ):
+        self.name = name  # needed to mimic the databroker.Broker api
+        self.client = client
+        self.backup_directory = backup_directory
+        self.backup_dictionary = backup_dictionary
+        self._run_router = RunRouter([self._factory])
+
+    def _factory(self, name, doc):
+        """Factory method to create a callback for processing a single Bluesky run
+
+        If backup_directory or backup_dictionary are specified, create conditional
+        backup callback(s) for saving documents as JSON.
+        """
+        cb = _RunInserter(self.client)
+
+        backup_callbacks = []
+        if self.backup_directory:
+            backup_callbacks.append(JSONLinesWriter(self.backup_directory))
+        if self.backup_dictionary is not None:
+            backup_callbacks.append(JSONDictWriter(self.backup_dictionary))
+        if backup_callbacks:
+            cb = _ConditionalBackup(cb, backup_callbacks)
+
+        return [cb], []
+
+    def insert(self, name, doc):
+        self(name, doc)
 
     def __call__(self, name, doc):
         self._run_router(name, doc)
