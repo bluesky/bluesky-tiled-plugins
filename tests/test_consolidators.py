@@ -871,13 +871,11 @@ def test_spec_metadata_propagation(
 def test_bytes_factory_validate_and_mimetype_guard(
     descriptor, bytes_stream_resource_factory
 ):
-    """`consolidator_factory` dispatches to `BytesConsolidator`, `validate`
-    succeeds when assets are reachable, and an unsupported mimetype is rejected."""
+    """`consolidator_factory` dispatches to `BytesConsolidator`, and an
+    unsupported mimetype is rejected."""
     sres = bytes_stream_resource_factory(data_key="test_img")
     cons = consolidator_factory(sres, descriptor)
     assert isinstance(cons, BytesConsolidator)
-    assert cons.validate() == []
-    assert cons.validate(fix_errors=True) == []
 
     sres["mimetype"] = "application/x-hdf5"
     with pytest.raises(ValueError, match="can not be handled by BytesConsolidator"):

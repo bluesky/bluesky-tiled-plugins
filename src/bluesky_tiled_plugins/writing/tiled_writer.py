@@ -6,11 +6,9 @@ from collections import defaultdict, deque, namedtuple
 from collections.abc import Callable
 from dataclasses import asdict
 import posixpath
-import re
 from typing import Any, Optional, cast
 import warnings
 
-import httpx
 import numpy
 import pyarrow
 from event_model import (
@@ -49,7 +47,6 @@ from packaging.version import Version
 from ..utils import truncate_json_overflow, split_table
 from ._dispatcher import Dispatcher
 from ._json_writer import JSONLinesWriter, JSONDictWriter
-from .validator import ValidationException
 from .consolidators import (
     ConsolidatorBase,
     DataSource,
@@ -975,91 +972,17 @@ class _RunWriter(DocumentRouter):
             if cons_md := consolidator.metadata:
                 sres_node.update_metadata(metadata=cons_md, drop_revision=True)
 
-        # Validate the Structure of the data for each external resource, if requested
-        # Try validating directly on the server, first; if endpoint is not available, do it locally
-        try:
-            if self._validate:
-                for attempt in retry_context():
-                    with attempt:
-                        response = self.root_node.context.http_client.post(
-                            self.root_node.uri.replace(
-                                "/api/v1/metadata/", "/custom/validate/", 1
-                            ),
-                            params={"fix": True},
-                            content=safe_json_dump(
-                                {"ignore_errors": self.ignore_errors}
-                            ),
-                        )
+        # Write the stop document to the metadata, include notes from the normalizer, if any
+        notes = list(dict.fromkeys(doc.pop("_run_normalizer_notes", []) + self.notes))
+        md_update = {"stop": doc, **({"notes": notes} if notes else {})}
+        self.root_node.update_metadata(metadata=md_update, drop_revision=True)
 
-                try:
-                    content = handle_error(response).json()
-                    _notes = content.get("notes", [])
-                    if content.get("valid"):
-                        self.notes.extend(_notes)
-                        for note in _notes:
-                            warnings.warn("Remote validation: " + note, stacklevel=2)
-                        if not _notes:
-                            logger.info(
-                                "Remote validation successful for all external data."
-                            )
-                    else:
-                        msg = "Remote validation failed: " + "; ".join(_notes)
-                        raise ValidationException(msg, self.root_node.item["id"])
-
-                except httpx.HTTPStatusError as e:
-                    # Backcompatibility: if the server does not support validation endpoint,
-                    # it will return 404 Not Found error; in this case, attempt to validate
-                    # the data structure locally with the Consolidator.
-
-                    if response.status_code == httpx.codes.NOT_FOUND:
-                        warnings.warn(
-                            "Tiled server does not support remote validation. "
-                            "Attempting to validate the data structure locally."
-                        )
-                        for sres_node, consolidator in node_and_cons:
-                            title = f"Validation of '{sres_node.item['id']}'"
-                            try:
-                                _notes = consolidator.validate(fix_errors=True)
-                                self.notes.extend(
-                                    [title + ": " + note for note in _notes]
-                                )
-                            except Exception as e:
-                                msg = (
-                                    f"{type(e).__name__}: "
-                                    + str(e)
-                                    .replace("\n", " ")
-                                    .replace("\r", "")
-                                    .strip()
-                                )
-                                msg = title + f" failed with error: {msg}"
-                                if any(
-                                    re.search(ptrn, msg) for ptrn in self.ignore_errors
-                                ):
-                                    warnings.warn(msg)
-                                else:
-                                    raise ValidationException(
-                                        msg, sres_node.item["id"]
-                                    ) from e
-                            self._update_data_source_for_node(
-                                sres_node, consolidator.get_data_source()
-                            )
-                    else:
-                        msg = (
-                            "Remote validation request failed with status code "
-                            f"{response.status_code}: {response.text}"
-                        )
-                        raise ValidationException(msg, self.root_node.item["id"]) from e
-
-        except Exception:
-            raise
-
-        finally:
-            # Write the stop document to the metadata, include notes from the normalizer, if any
-            notes = list(
-                dict.fromkeys(doc.pop("_run_normalizer_notes", []) + self.notes)
+        # Validate the run if requested; this will raise an error if the run is invalid.
+        # TODO: Validation in TiledWriter is deprecated and will be removed in a future release.
+        if self._validate:
+            self.root_node.validate(
+                ignore_errors=self.ignore_errors, raise_on_error=True
             )
-            md_update = {"stop": doc, **({"notes": notes} if notes else {})}
-            self.root_node.update_metadata(metadata=md_update, drop_revision=True)
 
     def descriptor(self, doc: EventDescriptor):
         desc_name = doc["name"]  # Name of the descriptor/stream
@@ -1232,7 +1155,7 @@ class TiledWriter:
         backup_dictionary: dict | None = None,
         batch_size: int = BATCH_SIZE,
         max_array_size: int = MAX_ARRAY_SIZE,
-        validate: bool = False,
+        validate: Optional[bool] = None,
         ignore_errors: Optional[list[str]] = None,
     ):
         """Callback for writing metadata and data from Bluesky documents into Tiled.
@@ -1287,7 +1210,15 @@ class TiledWriter:
         self._run_router = RunRouter([self._factory])
         self._batch_size = batch_size
         self._max_array_size = max_array_size
-        self._validate = validate
+        if validate:
+            warnings.warn(
+                "The `validate` argument of TiledWriter is deprecated and will be removed in a "
+                "future release. Please consider validating the run after it has been written "
+                "using the `BlueskyRunV3.validate` method on the Tiled client instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        self._validate = bool(validate)
         self.ignore_errors = ignore_errors or []
 
     def _factory(self, name, doc):
@@ -1335,7 +1266,7 @@ class TiledWriter:
         backup_directory: str | None = None,
         batch_size: int = BATCH_SIZE,
         max_array_size: int = MAX_ARRAY_SIZE,
-        validate: bool = False,
+        validate: Optional[bool] = None,
         **kwargs,
     ):
         client = from_uri(uri, **kwargs)
@@ -1361,7 +1292,7 @@ class TiledWriter:
         backup_directory: str | None = None,
         batch_size: int = BATCH_SIZE,
         max_array_size: int = MAX_ARRAY_SIZE,
-        validate: bool = False,
+        validate: Optional[bool] = None,
         **kwargs,
     ):
         client = from_profile(profile, **kwargs)
