@@ -25,7 +25,7 @@
           "source": "file",
           "dtype": "number",
           "dtype_numpy": "<f8",
-          "shape": [1],
+          "shape": [],
           "external": "STREAM:",
           "object_name": "det-obj1"
         },
@@ -33,7 +33,7 @@
           "source": "file",
           "dtype": "array",
           "dtype_numpy": "<i8",
-          "shape": [1, 13, 17],
+          "shape": [13, 17],
           "dims": ["time", "dim_x", "dim_y"],
           "external": "STREAM:",
           "object_name": "det-obj1"

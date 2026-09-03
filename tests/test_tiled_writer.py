@@ -32,12 +32,12 @@ from bluesky_tiled_plugins import TiledWriter
 from bluesky_tiled_plugins.writing.validator import ValidationException
 
 
-# Many fixtures in this module do not set join_method explicitly and thus rely on the
-# default, which currently triggers a DeprecationWarning announcing the upcoming change
-# of the default to "stack". Silence it at the module level so the strict
-# filterwarnings=["error"] policy does not turn expected usage into errors.
+# Several fixtures in this module intentionally exercise the (deprecated but still
+# supported) join_method="concat" layout. The dedicated test for the deprecation
+# warning lives in test_consolidators.py; here we silence it so the strict
+# filterwarnings=["error"] policy does not turn expected concat usage into errors.
 pytestmark = pytest.mark.filterwarnings(
-    "ignore:.*default value of join_method will change.*:DeprecationWarning"
+    "ignore:.*join_method='concat'.*:DeprecationWarning"
 )
 
 
@@ -73,6 +73,7 @@ class StreamDatumReadableCollectable(Named, Readable, Collectable, WritesStreamA
                 parameters={
                     "dataset": hdf5_dataset,
                     "chunk_shape": (100, *data_shape[1:]),
+                    "join_method": "concat",
                 },
                 data_key=data_key,
                 root=self.root,
@@ -451,7 +452,7 @@ def test_validate_external_data(client, external_assets_folder, error_type, vali
 
         # Modify the document to introduce an error
         if (error_type == "shape") and (name == "descriptor"):
-            doc["data_keys"]["det-key2"]["shape"] = [1, 2, 3]  # should be [1, 13, 17]
+            doc["data_keys"]["det-key2"]["shape"] = [2, 3]  # should be [13, 17]
         elif (error_type == "chunks") and name in {"resource", "stream_resource"}:
             doc["parameters"]["chunk_shape"] = [1, 2, 3]  # should be [3, 13, 17]
         elif (error_type == "dtype") and (name == "descriptor"):

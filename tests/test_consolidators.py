@@ -1,3 +1,4 @@
+import warnings
 from math import ceil
 
 import pytest
@@ -13,12 +14,15 @@ from tiled.structures.core import StructureFamily
 from tiled.structures.data_source import Management
 
 
-# Most fixtures in this module do not set join_method explicitly and therefore rely on
-# the default, which currently triggers a DeprecationWarning announcing the upcoming
-# change of the default to "stack". Silence it at the module level so the strict
-# filterwarnings=["error"] policy does not turn expected usage into errors.
+# This module intentionally exercises the (deprecated but still supported)
+# join_method="concat" layout extensively. Silence the deprecation warning at the
+# module level so the strict filterwarnings=["error"] policy does not turn expected
+# concat usage into errors. The tests that specifically assert the warning behavior
+# (test_concat_join_method_emits_deprecation_warning /
+# test_stack_join_method_does_not_warn / test_csv_concat_native_does_not_warn)
+# override this filter locally.
 pytestmark = pytest.mark.filterwarnings(
-    "ignore:.*default value of join_method will change.*:DeprecationWarning"
+    "ignore:.*join_method='concat'.*:DeprecationWarning"
 )
 
 
@@ -106,7 +110,7 @@ def descriptor():
 
 @pytest.fixture
 def hdf5_stream_resource_factory():
-    def _make(data_key, chunk_shape, spec=None):
+    def _make(data_key, chunk_shape, spec=None, join_method=None, join_chunks=None):
         parameters = {
             "dataset": f"entry/data/{data_key}",
             "swmr": True,
@@ -114,6 +118,10 @@ def hdf5_stream_resource_factory():
         }
         if spec is not None:
             parameters["spec"] = spec
+        if join_method is not None:
+            parameters["join_method"] = join_method
+        if join_chunks is not None:
+            parameters["join_chunks"] = join_chunks
         return {
             "data_key": data_key,
             "mimetype": "application/x-hdf5",
@@ -134,16 +142,25 @@ def image_seq_stream_resource_factory():
         "tiff": "image/tiff",
         "tif": "image/tiff",
     }
-    return lambda image_format, data_key, chunk_shape: {
-        "data_key": data_key,
-        "mimetype": f"multipart/related;type={format_to_mimetype[image_format]}",
-        "uri": "file://localhost/test/file/path",
-        "parameters": {
+
+    def _make(image_format, data_key, chunk_shape, join_method=None, join_chunks=None):
+        parameters = {
             "chunk_shape": chunk_shape,
             "template": "img_{:06d}." + image_format,
-        },
-        "uid": f"stream-resource-uid-{data_key}",
-    }
+        }
+        if join_method is not None:
+            parameters["join_method"] = join_method
+        if join_chunks is not None:
+            parameters["join_chunks"] = join_chunks
+        return {
+            "data_key": data_key,
+            "mimetype": f"multipart/related;type={format_to_mimetype[image_format]}",
+            "uri": "file://localhost/test/file/path",
+            "parameters": parameters,
+            "uid": f"stream-resource-uid-{data_key}",
+        }
+
+    return _make
 
 
 @pytest.fixture
@@ -212,7 +229,7 @@ shape_testdata = [
     # 5 events, 1 or 7 number per event
     ("test_num", 1, "concat", (5,)),
     ("test_7_nums", 7, "concat", (35,)),
-    ("test_num", 1, "stack", (5, 1)),
+    ("test_num", 1, "stack", (5,)),
     ("test_7_nums", 7, "stack", (5, 7)),
 ]
 
@@ -229,9 +246,10 @@ def test_hdf5_shape(
     join_method,
     expected,
 ):
-    stream_resource = hdf5_stream_resource_factory(data_key=data_key, chunk_shape=())
+    stream_resource = hdf5_stream_resource_factory(
+        data_key=data_key, chunk_shape=(), join_method=join_method
+    )
     cons = HDF5Consolidator(stream_resource, descriptor)
-    cons.join_method = join_method
     assert cons.shape == (0, *expected[1:])
     for i in range(5):
         doc = stream_datum_factory(data_key, i, i, i + 1)
@@ -259,10 +277,12 @@ def test_tiff_and_jpeg_shape(
     indx_per_stream_datum_doc,
 ):
     stream_resource = image_seq_stream_resource_factory(
-        image_format=image_format, data_key=data_key, chunk_shape=(1,)
+        image_format=image_format,
+        data_key=data_key,
+        chunk_shape=(1,),
+        join_method=join_method,
     )
     cons = consolidator_factory(stream_resource, descriptor)
-    cons.join_method = join_method
     assert cons.shape == (0, *expected[1:])
     for i in range(ceil(5 / indx_per_stream_datum_doc)):
         doc = stream_datum_factory(
@@ -315,6 +335,50 @@ def test_csv_shape_and_chunks(
         cons.consume_stream_datum(doc)
     assert cons.shape == expected_shape
     assert cons.chunks == expected_chunks
+
+
+def test_concat_join_method_emits_deprecation_warning(
+    descriptor, hdf5_stream_resource_factory
+):
+    """Explicitly requesting join_method='concat' via the StreamResource
+    parameters is deprecated (the default is now 'stack') and must emit a
+    DeprecationWarning."""
+    stream_resource = hdf5_stream_resource_factory(
+        data_key="test_img", chunk_shape=(), join_method="concat"
+    )
+    with pytest.warns(DeprecationWarning, match="join_method='concat'"):
+        cons = consolidator_factory(stream_resource, descriptor)
+    assert cons.join_method == "concat"
+
+
+def test_stack_join_method_does_not_warn(descriptor, hdf5_stream_resource_factory):
+    """The default (stack) join_method, whether implicit or explicit, must not
+    emit any deprecation warning."""
+    # Explicit stack
+    stream_resource = hdf5_stream_resource_factory(
+        data_key="test_img", chunk_shape=(), join_method="stack"
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        cons = consolidator_factory(stream_resource, descriptor)
+    assert cons.join_method == "stack"
+
+    # Implicit default (no join_method parameter)
+    stream_resource = hdf5_stream_resource_factory(data_key="test_img", chunk_shape=())
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        cons = consolidator_factory(stream_resource, descriptor)
+    assert cons.join_method == "stack"
+
+
+def test_csv_concat_native_does_not_warn(descriptor, csv_stream_resource_factory):
+    """CSVConsolidator is intrinsically concat (rows are appended) and offers no
+    'stack' alternative, so it must not emit the concat deprecation warning."""
+    stream_resource = csv_stream_resource_factory(data_key="test_arr", chunk_shape=())
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        cons = consolidator_factory(stream_resource, descriptor)
+    assert cons.join_method == "concat"
 
 
 # Tuples of (data_key, join_method, join_chunks, chunk_shape, expected_chunks)
@@ -372,8 +436,8 @@ chunk_hdf5_testdata = [
     ("test_arr", "stack", True, (2,), ((2, 2, 1), (1,), (3,))),
     ("test_7_arrs", "stack", True, (5, 1, 1), ((5,), (1, 1, 1, 1, 1, 1, 1), (1, 1, 1))),
     ("test_7_arrs", "stack", True, (2,), ((2, 2, 1), (7,), (3,))),
-    ("test_num", "stack", True, (), ((5,), (1,))),
-    ("test_num", "stack", True, (2,), ((2, 2, 1), (1,))),
+    ("test_num", "stack", True, (), ((5,),)),
+    ("test_num", "stack", True, (2,), ((2, 2, 1),)),
     ("test_7_nums", "stack", True, (), ((5,), (7,))),
     ("test_7_nums", "stack", True, (2,), ((2, 2, 1), (7,))),
     ("test_7_nums", "stack", True, (2, 3), ((2, 2, 1), (3, 3, 1))),
@@ -458,11 +522,12 @@ def test_hdf5_chunks(
     expected,
 ):
     stream_resource = hdf5_stream_resource_factory(
-        data_key=data_key, chunk_shape=chunk_shape
+        data_key=data_key,
+        chunk_shape=chunk_shape,
+        join_method=join_method,
+        join_chunks=join_chunks,
     )
     cons = HDF5Consolidator(stream_resource, descriptor)
-    cons.join_method = join_method
-    cons.join_chunks = join_chunks
     assert cons.chunks == ((0,), *expected[1:])
     for i in range(5):
         doc = stream_datum_factory(data_key, i, i, i + 1)
@@ -505,11 +570,13 @@ def test_tiff_and_jpeg_chunks(
     """Test the chunking of (possibly multipage) tiff and jpeg datasets and the number of registered files."""
 
     stream_resource = image_seq_stream_resource_factory(
-        image_format=image_format, data_key=data_key, chunk_shape=chunk_shape
+        image_format=image_format,
+        data_key=data_key,
+        chunk_shape=chunk_shape,
+        join_method=join_method,
+        join_chunks=join_chunks,
     )
     cons = consolidator_factory(stream_resource, descriptor)
-    cons.join_method = join_method
-    cons.join_chunks = join_chunks
     assert cons.chunks == ((0,), *expected_chunks[1:])
     for i in range(ceil(5 / indx_per_stream_datum_doc)):
         doc = stream_datum_factory(
@@ -536,7 +603,10 @@ def test_multipart_related_coerces_non_divisor_chunk_shape(
     """When frames-per-file does not divide frames-per-datum under `concat`,
     `MultipartRelatedConsolidator` warns and coerces chunk_shape to one file per datum."""
     sres = image_seq_stream_resource_factory(
-        image_format="tiff", data_key="test_6_imgs", chunk_shape=chunk_shape
+        image_format="tiff",
+        data_key="test_6_imgs",
+        chunk_shape=chunk_shape,
+        join_method="concat",
     )
     with pytest.warns(UserWarning, match="does not divide"):
         cons = consolidator_factory(sres, descriptor)
@@ -550,7 +620,10 @@ def test_multipart_related_files_per_datum_override(
     """The `files_per_datum` StreamResource parameter overrides the inferred value,
     both at construction time and after `update_from_stream_resource`."""
     sres = image_seq_stream_resource_factory(
-        image_format="tiff", data_key="test_6_imgs", chunk_shape=(1,)
+        image_format="tiff",
+        data_key="test_6_imgs",
+        chunk_shape=(1,),
+        join_method="concat",
     )
     sres["parameters"]["files_per_datum"] = 3
     cons = consolidator_factory(sres, descriptor)
@@ -563,14 +636,20 @@ def test_multipart_related_files_per_datum_override(
     # A subsequent StreamResource without files_per_datum falls back to the
     # inferred value (6 frames / chunk_shape[0]=1 => 6).
     sres2 = image_seq_stream_resource_factory(
-        image_format="tiff", data_key="test_6_imgs", chunk_shape=(1,)
+        image_format="tiff",
+        data_key="test_6_imgs",
+        chunk_shape=(1,),
+        join_method="concat",
     )
     cons.update_from_stream_resource(sres2)
     assert cons.files_per_datum == 6
 
     # And overriding again on the next update is honored.
     sres3 = image_seq_stream_resource_factory(
-        image_format="tiff", data_key="test_6_imgs", chunk_shape=(1,)
+        image_format="tiff",
+        data_key="test_6_imgs",
+        chunk_shape=(1,),
+        join_method="concat",
     )
     sres3["parameters"]["files_per_datum"] = 2
     cons.update_from_stream_resource(sres3)

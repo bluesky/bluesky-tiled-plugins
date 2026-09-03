@@ -279,6 +279,11 @@ async def json_seq_exporter(mimetype, adapter, metadata, filter_for_access):
                 total_shape[0] if is_stacked else total_shape[0] // datum_shape[0]
             )
 
+            # Persist the inferred join_method so the emitted stream_resource
+            # can be re-ingested with the same semantics regardless of the
+            # consolidator's default join_method.
+            parameters.setdefault("join_method", "stack" if is_stacked else "concat")
+
             # Multi-file (multipart) data sources persist adapter-only
             # parameters and drop the original filename template. Re-derive
             # a template from the concrete asset URIs so the emitted
@@ -293,9 +298,6 @@ async def json_seq_exporter(mimetype, adapter, metadata, filter_for_access):
                     uri = base_uri
                     parameters["template"] = template
                     parameters.setdefault("chunk_shape", [1])
-                    parameters.setdefault(
-                        "join_method", "stack" if is_stacked else "concat"
-                    )
 
                     # If files don't start at index 0, offset the datum
                     # indices so consolidator regenerates the same URIs.
