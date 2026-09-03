@@ -930,10 +930,14 @@ class _RunWriter(DocumentRouter):
     def start(self, doc: RunStart):
         doc = copy.copy(doc)
         self.access_tags = doc.pop("tiled_access_tags", None)  # type: ignore
+        extra_specs = doc.pop("tiled_specs", None) or []
         self.root_node = self.client.create_container(
             key=doc["uid"],
             metadata={"start": truncate_json_overflow(dict(doc))},
-            specs=[Spec("BlueskyRun", version="3.0")],
+            specs=[
+                *(Spec(s) if isinstance(s, str) else Spec(**s) for s in extra_specs),
+                Spec("BlueskyRun", version="3.0"),
+            ],
             access_tags=self.access_tags,
         )
 

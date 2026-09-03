@@ -6,6 +6,7 @@ from typing import cast
 from urllib.parse import parse_qs, urlparse
 
 
+from bluesky import RunEngine
 import bluesky.plan_stubs as bps
 import bluesky.plans as bp
 import h5py
@@ -294,6 +295,33 @@ def test_stream_datum_collectable(RE, client, tmp_path):
     assert stream[keys[0]].read() is not None
     assert stream[keys[1]].read() is not None
     assert stream[keys[2]].read() is not None
+
+
+def test_tiled_specs_from_start_doc(RE: RunEngine, client):
+    """Custom specs passed via `tiled_specs` are attached to the run container."""
+    tw = TiledWriter(client)
+    RE(
+        bp.count([ophyd.sim.det], 1),
+        tw,
+        tiled_specs=[{"name": "XAS_Calib", "version": "1.0"}, "TomographyFlyscan"],
+    )
+    run = client.values().last()
+    specs = {spec.name: spec.version for spec in run.specs}
+
+    assert specs["BlueskyRun"] == "3.0"
+    assert specs["XAS_Calib"] == "1.0"
+    assert "TomographyFlyscan" in specs
+    # The marker key is consumed by the writer and not stored in start metadata.
+    assert "tiled_specs" not in run.metadata["start"]
+
+
+def test_no_tiled_specs_leaves_default_spec(RE, client):
+    """Without `tiled_specs`, only the default BlueskyRun spec is present."""
+    tw = TiledWriter(client)
+    RE(bp.count([ophyd.sim.det], 1), tw)
+    run = client.values().last()
+
+    assert [spec.name for spec in run.specs] == ["BlueskyRun"]
 
 
 @pytest.mark.parametrize("frames_per_event", [1, 5, 10])
