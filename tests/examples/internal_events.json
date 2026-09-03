@@ -88,6 +88,20 @@
           "shape": [8],
           "object_name": "det"
         },
+        "str_arr": {
+          "source": "SIM:det",
+          "dtype": "array",
+          "dtype_numpy": "<U6",
+          "shape": [3],
+          "object_name": "det"
+        },
+        "str_img": {
+          "source": "SIM:det",
+          "dtype": "array",
+          "dtype_numpy": "<U3",
+          "shape": [2, 3],
+          "object_name": "det"
+        },
         "ragged": {
           "source": "SIM:det",
           "dtype": "array",
@@ -110,14 +124,32 @@
       },
       "name": "primary",
       "object_keys": {
-        "det": ["det", "empty", "long", "ragged", "ragged_padded", "time"]
+        "det": [
+          "det",
+          "empty",
+          "long",
+          "str_arr",
+          "str_img",
+          "ragged",
+          "ragged_padded",
+          "time"
+        ]
       },
       "run_start": "{{ uuid }}-dc0518f354ee",
       "time": 1745338531.004459,
       "uid": "{{ uuid }}-ab0498e83e2b",
       "hints": {
         "det": {
-          "fields": ["det", "empty", "long", "ragged", "ragged_padded", "time"]
+          "fields": [
+            "det",
+            "empty",
+            "long",
+            "str_arr",
+            "str_img",
+            "ragged",
+            "ragged_padded",
+            "time"
+          ]
         }
       }
     }
@@ -131,6 +163,11 @@
         "det": 1.0,
         "empty": [],
         "long": [0, 1, 2, 3, 4, 5, 6, 7],
+        "str_arr": ["foo", "bar", "baz"],
+        "str_img": [
+          ["aa", "bb", "cc"],
+          ["dd", "ee", "ff"]
+        ],
         "ragged": [
           [0, 1, 2, 3],
           [10, 11, 12]
@@ -142,6 +179,8 @@
         "det": 1745338531.001646,
         "empty": 1745338531.001647,
         "long": 1745338531.001648,
+        "str_arr": 1745338531.001648,
+        "str_img": 1745338531.001648,
         "ragged": 1745338531.001649,
         "ragged_padded": 1745338531.00165,
         "time": 1745338531.00165
@@ -160,6 +199,11 @@
         "det": 1.0,
         "empty": [],
         "long": [10, 11, 12, 13, 14, 15, 16, 17],
+        "str_arr": ["qux", "quux", "corge"],
+        "str_img": [
+          ["gg", "hh", "ii"],
+          ["jj", "kk", "ll"]
+        ],
         "ragged": [
           [10, 11, 12],
           [20, 21]
@@ -171,6 +215,8 @@
         "det": 1745338531.217144,
         "empty": 1745338531.217145,
         "long": 1745338531.217146,
+        "str_arr": 1745338531.217146,
+        "str_img": 1745338531.217146,
         "ragged": 1745338531.217147,
         "ragged_padded": 1745338531.217148,
         "time": 1745338531.00165
@@ -254,6 +300,20 @@
           "shape": [8],
           "object_name": "det"
         },
+        "str_arr": {
+          "source": "SIM:det",
+          "dtype": "array",
+          "dtype_numpy": "<U6",
+          "shape": [3],
+          "object_name": "det"
+        },
+        "str_img": {
+          "source": "SIM:det",
+          "dtype": "array",
+          "dtype_numpy": "<U3",
+          "shape": [2, 3],
+          "object_name": "det"
+        },
         "ragged": {
           "source": "SIM:det",
           "dtype": "array",
@@ -276,14 +336,32 @@
       },
       "name": "primary",
       "object_keys": {
-        "det": ["det", "empty", "long", "ragged", "ragged_padded", "time"]
+        "det": [
+          "det",
+          "empty",
+          "long",
+          "str_arr",
+          "str_img",
+          "ragged",
+          "ragged_padded",
+          "time"
+        ]
       },
       "run_start": "{{ uuid }}-dc0518f354ee",
       "time": 1745338532.004459,
       "uid": "{{ uuid }}-ab0498e83e2b-2",
       "hints": {
         "det": {
-          "fields": ["det", "empty", "long", "ragged", "ragged_padded", "time"]
+          "fields": [
+            "det",
+            "empty",
+            "long",
+            "str_arr",
+            "str_img",
+            "ragged",
+            "ragged_padded",
+            "time"
+          ]
         }
       }
     }
@@ -297,6 +375,11 @@
         "det": 1.0,
         "empty": [],
         "long": [20, 21, 22, 23, 24, 25, 26, 27],
+        "str_arr": ["grault", "garply", "waldo"],
+        "str_img": [
+          ["mm", "nn", "oo"],
+          ["pp", "qq", "rr"]
+        ],
         "ragged": [[], [20, 21]],
         "ragged_padded": [20, 21, 22, 23],
         "time": 1745338533.00165
@@ -305,6 +388,8 @@
         "det": 1745338533.219767,
         "empty": 1745338533.219768,
         "long": 1745338533.219769,
+        "str_arr": 1745338533.219769,
+        "str_img": 1745338533.219769,
         "ragged": 1745338533.21977,
         "ragged_padded": 1745338533.21977,
         "time": 1745338533.219771

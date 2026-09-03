@@ -13,6 +13,22 @@ _DESCRIPTOR_VALIDATOR = schema_validators[DocumentNames.descriptor]
 _NON_DESCRIPTOR_KEYS = frozenset({"_config_updates", "stream_name"})
 
 
+def _to_builtin(value):
+    """Recursively convert a table cell into JSON-serializable builtins.
+
+    A cell read back from the internal table may be a numpy array or,
+    for an nD array column, a numpy object array whose elements are
+    themselves numpy arrays. Calling `tolist()` only on the outer object
+    leaves the inner arrays untouched, so recurse into the resulting
+    lists to convert every level.
+    """
+    if hasattr(value, "tolist"):
+        value = value.tolist()
+    if isinstance(value, list):
+        return [_to_builtin(v) for v in value]
+    return value
+
+
 def build_descriptor_docs(raw_metadata, stream_name, run_start_uid=None):
     """Reconstruct the sequence of `EventDescriptor` documents for a
     single stream from the raw metadata dictionary cached on its Tiled node.
@@ -171,6 +187,7 @@ async def json_seq_exporter(mimetype, adapter, metadata, filter_for_access):
         row_data = {}  # seq_num -> {key: value}
         row_ts = {}  # seq_num -> {key: timestamp}
         row_time = {}  # seq_num -> row time
+        table_ts = defaultdict(dict)  # seq_num -> {key: timestamp} for every ts_ column
         if "internal" in part_names:
             internal_node = await desc_node.lookup_adapter(["internal"])
             df = await internal_node.read()
@@ -179,36 +196,46 @@ async def json_seq_exporter(mimetype, adapter, metadata, filter_for_access):
                 for k in df.columns
                 if k not in {"seq_num", "time"} and not k.startswith("ts_")
             ]
+            # Timestamps for internal-array data keys stay in the table (only the
+            # values are split off into child nodes), so keep them all around to
+            # restore timestamps when merging those arrays back into events below.
+            ts_keys = [k[len("ts_") :] for k in df.columns if k.startswith("ts_")]
             for row in df.to_dict(orient="records"):
                 sn = row["seq_num"]
                 row_time[sn] = row["time"]
                 data = row_data.setdefault(sn, {})
                 ts = row_ts.setdefault(sn, {})
                 for k in keys:
-                    data[k] = (
-                        row[k].tolist() if hasattr(row[k], "__array__") else row[k]
-                    )
+                    data[k] = _to_builtin(row[k])
                     ts[k] = row[f"ts_{k}"]
+                for k in ts_keys:
+                    table_ts[sn][k] = row[f"ts_{k}"]
 
-        # 2. Ragged internal arrays live in their own child nodes with
-        # `structure_family == "ragged"`. Merge them into the event
-        # sequence so re-ingest routes them back through `write_ragged`.
-        ragged_keys = set()
-        for part_name in part_names.difference(("internal",)):
-            part_node = await desc_node.lookup_adapter([part_name])
-            if getattr(part_node, "structure_family", None) != "ragged":
+        # 2. Internal (non-external) array data lives in its own child nodes,
+        # either as regular arrays (e.g. large or string arrays written as zarr)
+        # or as `ragged` arrays. Merge them back into the event sequence so
+        # re-ingest routes them through the internal-array / ragged paths rather
+        # than mistaking them for external stream resources. Genuinely external
+        # data keys carry an `external` marker and are handled as stream
+        # resources further below.
+        data_keys_meta = desc_meta.get("data_keys", {})
+        internal_array_keys = set()
+        for part_name in sorted(part_names.difference(("internal",))):
+            if data_keys_meta.get(part_name, {}).get("external"):
                 continue
-            ragged_keys.add(part_name)
-            ragged_array = await part_node.read()
-            values = ragged_array.tolist()
-            # Assume ragged rows are ordered by seq_num; if the internal
+            part_node = await desc_node.lookup_adapter([part_name])
+            values = (await part_node.read()).tolist()
+            internal_array_keys.add(part_name)
+            # Assume array rows are ordered by seq_num; if the internal
             # table is present, seq_nums start at 1 and are contiguous.
             seq_nums = (
                 sorted(row_data.keys()) if row_data else list(range(1, len(values) + 1))
             )
             for sn, val in zip(seq_nums, values):
                 row_data.setdefault(sn, {})[part_name] = val
-                row_ts.setdefault(sn, {})[part_name] = row_time.get(sn, 0.0)
+                row_ts.setdefault(sn, {})[part_name] = table_ts.get(sn, {}).get(
+                    part_name, row_time.get(sn, 0.0)
+                )
 
         for sn in sorted(row_data.keys()):
             desc_uid = desc_time_uids[0]["uid"]
@@ -228,7 +255,9 @@ async def json_seq_exporter(mimetype, adapter, metadata, filter_for_access):
 
         # Generate Stream Resources and Datums
         desc_uid = desc_node.metadata()["uid"]
-        for data_key in part_names.difference(("internal",)).difference(ragged_keys):
+        for data_key in part_names.difference(("internal",)).difference(
+            internal_array_keys
+        ):
             # Loop over data_keys for external data only
             sres_uid = f"sr-{desc_uid}-{data_key}"  # can be anything (unique)
             dkey_node = await desc_node.lookup_adapter([data_key])

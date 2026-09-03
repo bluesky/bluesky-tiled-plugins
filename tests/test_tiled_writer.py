@@ -805,23 +805,14 @@ def test_json_backup(client, tmpdir, monkeypatch):
 @pytest.mark.parametrize(
     "max_array_size, expected_scheme",
     [
-        pytest.param(
-            0,
-            "file",
-            marks=pytest.mark.xfail(
-                reason=(
-                    "internal_events.json has a data_key with a zero-length dimension; "
-                    "most zarr versions reject chunk edges of 0. Passes on zarr <3.2 "
-                    "and >=3.1; fails on zarr 2.x and zarr >=3.2."
-                ),
-                raises=(ZeroDivisionError, ValueError),
-                strict=False,
-            ),
-        ),
+        (0, "file"),
         (4, "file"),
         (16, "duckdb"),
         (-1, "duckdb"),
     ],
+)
+@pytest.mark.filterwarnings(
+    "ignore:Failed to convert ragged array to numpy:UserWarning"
 )
 def test_internal_arrays_written_as_zarr(client, max_array_size, expected_scheme):
     tw = TiledWriter(client, max_array_size=max_array_size)
@@ -844,6 +835,59 @@ def test_internal_arrays_written_as_zarr(client, max_array_size, expected_scheme
         urlparse(internal_table.data_sources()[0].assets[0].data_uri).scheme == "duckdb"
     )
 
+    # String arrays are always written as zarr, regardless of their size, because
+    # they can not be stored in the SQL table in a readable form.
+    str_arr = run["primary"]["str_arr"]
+    str_arr_expected = np.array(
+        [["foo", "bar", "baz"], ["qux", "quux", "corge"], ["grault", "garply", "waldo"]]
+    )
+    assert str_arr.shape == (3, 3)
+    assert str_arr.read().dtype == np.dtype("<U6")
+    assert str_arr.read().shape == (3, 3)
+    assert np.array_equal(str_arr.read(), str_arr_expected)
+    assert "str_arr" not in internal_table.columns
+    assert urlparse(str_arr.data_sources()[0].assets[0].data_uri).scheme == "file"
+
+    # The "empty" data_key carries a zero-length array in every event. When
+    # classified as an internal (zarr) array (max_array_size == 0) it holds no
+    # data and can not be chunked by zarr, so it falls back to the tabular
+    # store instead of being written as a separate zarr node.
+    if max_array_size == 0:
+        assert "empty" not in run["primary"].base
+        assert "empty" in internal_table.columns
+
+    # An nD per-event array (2x3 strings) is stored as a 3D zarr array and read
+    # back with its full shape.
+    str_img = run["primary"]["str_img"]
+    assert str_img.shape == (3, 2, 3)
+    assert str_img.read()[0].tolist() == [["aa", "bb", "cc"], ["dd", "ee", "ff"]]
+    assert urlparse(str_img.data_sources()[0].assets[0].data_uri).scheme == "file"
+
+    # Internal dimension names: the event axis is always "time"; inner dims are
+    # named per size with a "dim_int_" prefix and shared across keys so
+    # equal-sized dimensions align in the xarray Dataset.
+    str_arr_dims = run["primary"].base["str_arr"].dims
+    str_img_dims = run["primary"].base["str_img"].dims
+    assert str_arr_dims[0] == str_img_dims[0] == "time"
+    assert all(d.startswith("dim_int_") for d in str_arr_dims[1:] + str_img_dims[1:])
+    # str_arr (size 3) and str_img's trailing axis (size 3) share a name; the
+    # two str_img axes (sizes 2 and 3) get distinct names.
+    assert str_img_dims[2] == str_arr_dims[1]
+    assert str_img_dims[1] != str_img_dims[2]
+
+    # Ragged arrays: the variable-length (None) axis is named "dim_rgd_{axis}"
+    # while a fixed-size axis reuses a shared "dim_int_" name.
+    ragged_dims = run["primary"].base["ragged"].dims
+    assert ragged_dims[0] == "time"
+    assert ragged_dims[-1] == "dim_rgd_2"
+    assert ragged_dims[1].startswith("dim_int_")
+
+    # Tabular columns share the same "time" event axis as the zarr arrays, so
+    # the assembled dataset has no stray "dim0".
+    dataset = run["primary"].read()
+    assert "time" in dataset.sizes
+    assert "dim0" not in dataset.sizes
+
     if expected_scheme == "file":
         assert (
             "long" in run["primary"].base
@@ -855,6 +899,12 @@ def test_internal_arrays_written_as_zarr(client, max_array_size, expected_scheme
             urlparse(run["primary"]["long"].data_sources()[0].assets[0].data_uri).scheme
             == "file"
         )
+        # The size-8 "long" axis gets a different name than the size-3 str_arr
+        # axis.
+        long_dims = run["primary"].base["long"].dims
+        assert long_dims[0] == "time"
+        assert long_dims[1].startswith("dim_int_")
+        assert long_dims[1] != str_arr_dims[1]
     else:
         assert "long" not in run["primary"].base
         assert "long" in internal_table.columns

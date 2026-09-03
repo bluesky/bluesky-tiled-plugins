@@ -111,6 +111,10 @@ filterwarnings = [
   # this is a third-party issue not in our control.
   "ignore:SelectableGroups dict interface is deprecated:DeprecationWarning",
   "ignore:Using `httpx` with `starlette.testclient` is deprecated:starlette.exceptions.StarletteDeprecationWarning",
+  # String/bytes arrays are intentionally written to zarr with fixed-length dtypes
+  # so they remain readable; zarr warns that these dtypes have no stable Zarr V3
+  # specification yet. This warning is emitted by the (in-process) test server.
+  "ignore:The data type .* does not have a Zarr V3 specification",
 ]
 log_level = "INFO"
 testpaths = [
