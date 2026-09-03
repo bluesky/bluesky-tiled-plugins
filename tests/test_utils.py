@@ -1,6 +1,10 @@
-import orjson
+import math
 
-from bluesky_tiled_plugins.utils import truncate_json_overflow
+import orjson
+import pyarrow
+import pytest
+
+from bluesky_tiled_plugins.utils import split_table, truncate_json_overflow
 
 
 def test_truncate_json_overflow():
@@ -55,3 +59,32 @@ def test_truncate_json_overflow():
         ]
         is None
     )
+
+
+@pytest.mark.parametrize(
+    "ncols, max_columns",
+    [
+        (10, 4),  # remainder: parts of unequal size
+        (9, 3),  # exact division
+        (5, 5),  # single part (ncols == max_columns)
+        (1, 4),  # single column, single part
+        (7, 1),  # one column per part
+    ],
+)
+def test_split_table(ncols, max_columns):
+    table = pyarrow.table({f"col_{i:03d}": [i, i + 1] for i in range(ncols)})
+
+    parts = list(split_table(table, max_columns))
+
+    # The table is split into the minimal number of balanced parts, none of
+    # which exceeds `max_columns` columns.
+    assert len(parts) == math.ceil(ncols / max_columns)
+    assert all(part.num_columns <= max_columns for part in parts)
+
+    # Every column appears exactly once across the parts, sorted by name, and
+    # the underlying data is preserved.
+    recombined = [name for part in parts for name in part.column_names]
+    assert recombined == sorted(table.column_names)
+    for part in parts:
+        for name in part.column_names:
+            assert part.column(name).to_pylist() == table.column(name).to_pylist()
