@@ -10,7 +10,7 @@ from tiled.structures.array import ArrayStructure, BuiltinDtype, StructDtype
 from tiled.structures.bytes import BytesStructure
 from tiled.structures.core import StructureFamily
 from tiled.structures.data_source import Asset, DataSource, Management
-from ..utils import compile_template, list_summands, size_from_uri
+from ..utils import compile_template, list_summands
 
 
 @dataclasses.dataclass
@@ -369,119 +369,6 @@ class ConsolidatorBase:
             "This method is not implemented in the base Consolidator class."
         )
 
-    def validate(self, fix_errors=False) -> list[str]:
-        """Validate the Consolidator's state against the expected structure"""
-
-        # Initialize adapter from uris and determine the structure
-        adapter_class = DEFAULT_ADAPTERS_BY_MIMETYPE[self.mimetype]
-        uris = [asset.data_uri for asset in self.assets]
-        structure = adapter_class.from_uris(
-            *uris, **self.adapter_parameters()
-        ).structure()
-        notes = []
-
-        # If this resource has the `frame_per_point`/`multiplier` parameter, the true shape of
-        # the data is expected to be (num_events, multiplier, *rest) and needs to be adjusted
-        if multiplier := self._sres_parameters.get("multiplier"):
-            if structure.shape[0] % multiplier != 0:
-                msg = (
-                    "Expected the leftmost dimension of the data to be divisible by the "
-                    f"`frame_per_point` multiplier of ({multiplier}), but got "
-                    f"shape {structure.shape}. Ignoring the multiplier parameter."
-                )
-            else:
-                orig_shape, self.orig_chunks = structure.shape, structure.chunks
-                structure.shape = (
-                    orig_shape[0] // multiplier,
-                    multiplier,
-                    *orig_shape[1:],
-                )
-                structure.chunks = (
-                    list_summands(structure.shape[0], self.orig_chunks[0][0]),
-                    (multiplier,),
-                    *self.orig_chunks[1:],
-                )
-                msg = (
-                    "Adjusted shape and chunks accorging to the `frame_per_point` "
-                    f"multiplier of ({multiplier}): {orig_shape} -> {structure.shape}"
-                )
-            warnings.warn(msg, stacklevel=2)
-            notes.append(msg)
-
-        if self.shape != structure.shape:
-            if not fix_errors:
-                raise ValueError(f"Shape mismatch: {self.shape} != {structure.shape}")
-            msg = f"Fixed shape mismatch: {self.shape} -> {structure.shape}"
-            warnings.warn(msg, stacklevel=2)
-            if self.join_method == "stack":
-                self._num_rows = structure.shape[0]
-                self.datum_shape = structure.shape[1:]
-            elif self.join_method == "concat":
-                # Estimate the number of frames_per_event (multiplier)
-                multiplier = (
-                    1
-                    if structure.shape[0] % (structure.chunks[0][0] or 1)
-                    else structure.chunks[0][0]
-                ) or 1
-                self._num_rows = structure.shape[0] // multiplier
-                self.datum_shape = (multiplier,) + structure.shape[1:]
-            notes.append(msg)
-
-        if self.chunks != structure.chunks:
-            if not fix_errors:
-                raise ValueError(
-                    f"Chunk shape mismatch: {self.chunks} != {structure.chunks}"
-                )
-            _chunk_shape = tuple(c[0] for c in structure.chunks)
-            msg = f"Fixed chunk shape mismatch: {self.chunk_shape} -> {_chunk_shape}"
-            warnings.warn(msg, stacklevel=2)
-            self.chunk_shape = _chunk_shape
-            notes.append(msg)
-
-        if self.data_type != structure.data_type:
-            if not fix_errors:
-                raise ValueError(
-                    f"dtype mismatch: {self.data_type} != {structure.data_type}"
-                )
-            msg = (
-                f"Fixed dtype mismatch: {self.data_type.to_numpy_dtype()} "
-                f"-> {structure.data_type.to_numpy_dtype()}"
-            )
-            warnings.warn(msg, stacklevel=2)
-            self.data_type = structure.data_type
-            notes.append(msg)
-
-        if self.dims and (len(self.dims) != len(structure.shape)):
-            if not fix_errors:
-                raise ValueError(
-                    f"Number of dimension names mismatch for a "
-                    f"{len(structure.shape)}-dimensional array: {self.dims}"
-                )
-            old_dims = self.dims
-            if len(old_dims) < len(structure.shape):
-                self.dims = (
-                    ("time",)
-                    + old_dims
-                    + tuple(
-                        f"dim_{i}"
-                        for i in range(len(old_dims) + 1, len(structure.shape))
-                    )
-                )
-            else:
-                self.dims = old_dims[: len(structure.shape)]
-            msg = f"Fixed dimension names: {old_dims} -> {self.dims}"
-            warnings.warn(msg, stacklevel=2)
-            notes.append(msg)
-
-        try:
-            adapter = self.init_adapter()
-        except Exception as e:
-            raise RuntimeError(f"Adapter can not be initialized: {e}") from e
-        if adapter is None:
-            raise RuntimeError("Adapter can not be initialized")
-
-        return notes
-
     def get_adapter(self, adapters_by_mimetype=None):
         warnings.warn(
             f"{self.__class__.__name__}.get_adapter is deprecated and will be removed in a future release; "
@@ -582,19 +469,6 @@ class BytesConsolidator:
 
         # Increment the offset to reset the file index counter to start from "0" for the new StreamResource template
         self._indx_offset = len(self.assets)
-
-    def validate(self, fix_errors: bool = False) -> list[str]:
-        """Verify each registered asset is reachable; bytes payloads are otherwise opaque."""
-        from .validator import AssetValidationException
-
-        for ast in self.assets:
-            try:
-                size_from_uri(ast.data_uri)
-            except (FileNotFoundError, OSError, ValueError) as e:
-                raise AssetValidationException(
-                    f"Could not determine size of asset {ast.data_uri}: {type(e).__name__}: {e}"
-                ) from e
-        return []
 
     def get_data_source(self) -> DataSource:
         return DataSource(
