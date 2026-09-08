@@ -26,6 +26,7 @@ from event_model.documents.event_descriptor import DataKey
 from event_model.documents.stream_datum import StreamDatum
 from event_model.documents.stream_resource import StreamResource
 from tiled.client import record_history
+from tiled.client.utils import ClientError
 from tiled.utils import safe_json_dump
 from examples.render import render_templated_documents
 
@@ -503,7 +504,9 @@ def test_validate_external_data(client, external_assets_folder, error_type, vali
     # Try reading the imported data
     run = client[uid]
     if not validate and not error_type == "chunks":
-        with pytest.raises(ValueError):
+        # Older Tiled clients fail while reshaping; newer servers reject the
+        # incompatible expected shape before returning data.
+        with pytest.raises((ValueError, ClientError)):
             assert run["primary"].read() is not None
     else:
         assert run["primary"].read() is not None

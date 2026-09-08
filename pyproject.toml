@@ -111,6 +111,9 @@ filterwarnings = [
   # this is a third-party issue not in our control.
   "ignore:SelectableGroups dict interface is deprecated:DeprecationWarning",
   "ignore:Using `httpx` with `starlette.testclient` is deprecated:starlette.exceptions.StarletteDeprecationWarning",
+  # Starlette's TestClient imports an AnyIO compatibility alias deprecated by
+  # AnyIO 4.15 on Python 3.14; this is a third-party warning.
+  "ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning",
   # String/bytes arrays are intentionally written to zarr with fixed-length dtypes
   # so they remain readable; zarr warns that these dtypes have no stable Zarr V3
   # specification yet. This warning is emitted by the (in-process) test server.
