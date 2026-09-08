@@ -29,15 +29,15 @@ of any metadata or data. That is, if the exported documents are re-ingested with
 ## Application Note: Missing media_types configuration (406 ClientError)
 
 If the Tiled server is not configured with the `media_types` section shown
-above, clients may encounter an error when requesting a Bluesky Run’s
-document stream (JSON sequence).
+above, clients may encounter an error when requesting a Bluesky Run’s document
+stream (JSON sequence).
 
 ### Symptom
 
-A `ClientError` may be raised when calling a Run’s `documents()` generator.
-This may happen either directly, or indirectly via higher-level helpers
-such as `export()` (and potentially other APIs that consume `documents()`
-under the hood).
+A `ClientError` may be raised when calling a Run’s `documents()` generator. This
+may happen either directly, or indirectly via higher-level helpers such as
+`export()` (and potentially other APIs that consume `documents()` under the
+hood).
 
 Example error message:
 
@@ -60,14 +60,13 @@ run.export("something.ext")
 
 ### Why it happens
 
-`run.documents()` requests the Run in JSON *sequence* format
+`run.documents()` requests the Run in JSON _sequence_ format
 (`application/json-seq`). If the server is not configured to advertise/support
 that media type, Tiled responds with **HTTP 406 Not Acceptable**, indicating
 that none of the client-requested media types are available.
 
 ### Resolution
 
-Ensure the Tiled server configuration includes the `media_types` section
-shown above (specifically enabling support for `application/json-seq`).
-After adding it, restart the Tiled server so the updated media-type
-configuration is applied.
+Ensure the Tiled server configuration includes the `media_types` section shown
+above (specifically enabling support for `application/json-seq`). After adding
+it, restart the Tiled server so the updated media-type configuration is applied.
