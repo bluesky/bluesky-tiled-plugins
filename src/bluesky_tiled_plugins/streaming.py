@@ -1,8 +1,9 @@
 import functools
 import logging
 import threading
-from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any, Protocol, cast
 
 from pandas import DataFrame
@@ -22,6 +23,9 @@ from tiled.client.stream import (
 logger = logging.getLogger(__name__)
 
 
+_EMPTY_START_DOCUMENT: Mapping[str, Any] = MappingProxyType({})
+
+
 @dataclass(frozen=True)
 class BlueskyStreamUpdate:
     """
@@ -39,12 +43,25 @@ class BlueskyStreamUpdate:
     update : LiveArrayData, LiveArrayRef, or LiveTableData
         Original Tiled live update. It is retained without decoding until
         :meth:`data` is called.
+    start_document : Mapping[str, Any]
+        Immutable snapshot of the Tiled-persisted run
+        ``metadata[\"start\"]``. It is empty when the matching run has no stored
+        start metadata. It represents stored metadata, not the inbound RunStart
+        document.
+    sequence : int
+        Native positive per-node Tiled streaming sequence number for ``update``.
+        Use it to correlate updates and detect duplicates or gaps for one node.
+
     """
 
     run_uid: str
     stream_name: str
     data_keys: tuple[str, ...]
     update: LiveArrayData | LiveArrayRef | LiveTableData
+    start_document: Mapping[str, Any] = field(
+        default_factory=lambda: _EMPTY_START_DOCUMENT
+    )
+    sequence: int = 0
 
     def data(self) -> Any:
         """
@@ -69,6 +86,17 @@ class BlueskyStreamUpdate:
         return data
 
 
+def _freeze_json(value: Any) -> Any:
+    """Create a read-only view of the of the value."""
+    if isinstance(value, Mapping):
+        return MappingProxyType(
+            {key: _freeze_json(item) for key, item in value.items()}
+        )
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return tuple(_freeze_json(item) for item in value)
+    return value
+
+
 class _Subscribable(Protocol):
     @property
     def uri(self) -> str: ...
@@ -77,7 +105,11 @@ class _Subscribable(Protocol):
 
 
 class BlueskyStreamSubscription:
-    """Own recursive Tiled subscriptions for one named Bluesky event stream."""
+    """Own recursive Tiled subscriptions for one named Bluesky event stream.
+
+    Completed descendants are released after their producer closes their Tiled
+    streams; the catalog root remains active for later runs.
+    """
 
     def __init__(
         self,
@@ -88,6 +120,7 @@ class BlueskyStreamSubscription:
         *,
         start: int | None,
         max_size: int,
+        run_filter: Callable[[LiveChildCreated], bool] | None,
     ) -> None:
         """
         Create and start a managed stream subscription.
@@ -113,6 +146,9 @@ class BlueskyStreamSubscription:
             records.
         max_size : int
             Maximum incoming WebSocket message size in bytes.
+        run_filter : Callable[[LiveChildCreated], bool] or None
+            Optional raw Tiled run predicate. Use :func:`subscribe_to_stream`
+            for the public input boundary.
 
         Raises
         ------
@@ -122,18 +158,24 @@ class BlueskyStreamSubscription:
 
         Notes
         -----
-        This constructor starts the root catalog subscription before returning.
-        Prefer :func:`subscribe_to_stream`, which normalizes public key input and
-        rejects an empty selection.
+        This constructor starts and connects the root catalog subscription before
+        returning. Future run descendants cannot exist until their writer creates
+        them. Producer-closed descendant streams are released after their native
+        callbacks drain. Prefer :func:`subscribe_to_stream`, which normalizes
+        public key input and rejects an empty selection.
         """
         self._stream_name = stream_name
         self._data_keys = data_keys
         self._callback = callback
+        self._run_filter = run_filter
         self._start = start
         self._max_size = max_size
         self._lock = threading.Lock()
         self._closed = False
-        self._subscriptions: dict[str, tuple[Subscription, Callable[..., None]]] = {}
+        self._subscriptions: dict[
+            str,
+            tuple[Subscription, Callable[..., None], Callable[[Subscription], None]],
+        ] = {}
         # URI keys in global parent-before-child creation order. Reversing this
         # linear extension of the hierarchy tears down leaves before parents.
         self._ordered_subscription_uris: list[str] = []
@@ -180,8 +222,10 @@ class BlueskyStreamSubscription:
 
         Notes
         -----
-        Call this from subscription-owner code, not from a callback delivered by
-        this manager.
+        Normal Tiled stream closure releases completed descendants after their
+        callbacks drain. Producers that leave streams open retain their descendants
+        until this global teardown operation; call it from subscription-owner code,
+        not from a callback delivered by this manager.
         """
         with self._lock:
             if self._closed:
@@ -230,8 +274,11 @@ class BlueskyStreamSubscription:
         node: _Subscribable,
         run_uid: str,
         data_keys: tuple[str, ...],
+        start_document: Mapping[str, Any],
     ) -> None:
-        callback = functools.partial(self._handle_data_update, run_uid, data_keys)
+        callback = functools.partial(
+            self._handle_data_update, run_uid, data_keys, start_document
+        )
 
         def attach(subscription: Subscription) -> None:
             cast(
@@ -254,8 +301,12 @@ class BlueskyStreamSubscription:
                 if self._closed or uri in self._subscriptions:
                     return
                 subscription = node.subscribe()
+                close_callback = functools.partial(
+                    self._handle_subscription_closed, uri, subscription
+                )
                 attach(subscription)
-                self._subscriptions[uri] = (subscription, callback)
+                subscription.stream_closed.add_callback(close_callback)
+                self._subscriptions[uri] = (subscription, callback, close_callback)
                 self._ordered_subscription_uris.append(uri)
                 subscription.start_in_thread(self._start, max_size=self._max_size)
                 started = True
@@ -274,14 +325,45 @@ class BlueskyStreamSubscription:
                 except Exception:
                     logger.exception("Failed to disconnect Tiled subscription %s", uri)
 
+    def _handle_subscription_closed(self, uri: str, subscription: Subscription) -> None:
+        with self._lock:
+            managed_subscription = self._subscriptions.get(uri)
+            if (
+                managed_subscription is None
+                or managed_subscription[0] is not subscription
+            ):
+                return
+            self._subscriptions.pop(uri)
+            self._ordered_subscription_uris.remove(uri)
+
     def _handle_catalog_child(self, update: LiveChildCreated) -> None:
         child = update.child()
         if not isinstance(child, Container) or not _has_spec(child, "BlueskyRun"):
             return
-        callback = functools.partial(self._handle_run_child, child.item["id"])
+        run_uid = child.item["id"]
+        if self._run_filter is not None:
+            try:
+                if not self._run_filter(update):
+                    return
+            except Exception:
+                logger.exception(
+                    "Run filter failed for Tiled run %s at %s", run_uid, child.uri
+                )
+                return
+        start_document = (
+            _freeze_json(update.metadata["start"])
+            if "start" in update.metadata
+            else _EMPTY_START_DOCUMENT
+        )
+        callback = functools.partial(self._handle_run_child, run_uid, start_document)
         self._subscribe_child_container(child, callback)
 
-    def _handle_run_child(self, run_uid: str, update: LiveChildCreated) -> None:
+    def _handle_run_child(
+        self,
+        run_uid: str,
+        start_document: Mapping[str, Any],
+        update: LiveChildCreated,
+    ) -> None:
         child = update.child()
         if (
             not isinstance(child, Container)
@@ -289,10 +371,15 @@ class BlueskyStreamSubscription:
             or child.item["id"] != self._stream_name
         ):
             return
-        callback = functools.partial(self._handle_stream_child, run_uid)
+        callback = functools.partial(self._handle_stream_child, run_uid, start_document)
         self._subscribe_child_container(child, callback)
 
-    def _handle_stream_child(self, run_uid: str, update: LiveChildCreated) -> None:
+    def _handle_stream_child(
+        self,
+        run_uid: str,
+        start_document: Mapping[str, Any],
+        update: LiveChildCreated,
+    ) -> None:
         child = update.child()
         item = child.item
         structure_family = item["attributes"]["structure_family"]
@@ -300,12 +387,12 @@ class BlueskyStreamSubscription:
             data_key = item["id"]
             if data_key not in self._data_keys:
                 return
-            self._subscribe_child_data(child, run_uid, (data_key,))
+            self._subscribe_child_data(child, run_uid, (data_key,), start_document)
         elif structure_family == "table":
             columns = item["attributes"]["structure"]["columns"]
             data_keys = tuple(key for key in self._data_keys if key in columns)
             if data_keys:
-                self._subscribe_child_data(child, run_uid, data_keys)
+                self._subscribe_child_data(child, run_uid, data_keys, start_document)
 
     def _subscribe_child_container(
         self,
@@ -322,9 +409,12 @@ class BlueskyStreamSubscription:
         node: BaseClient,
         run_uid: str,
         data_keys: tuple[str, ...],
+        start_document: Mapping[str, Any],
     ) -> None:
         try:
-            self._subscribe_data(cast(_Subscribable, node), run_uid, data_keys)
+            self._subscribe_data(
+                cast(_Subscribable, node), run_uid, data_keys, start_document
+            )
         except Exception:
             logger.exception("Failed to subscribe to Tiled node %s", node.uri)
 
@@ -332,6 +422,7 @@ class BlueskyStreamSubscription:
         self,
         run_uid: str,
         data_keys: tuple[str, ...],
+        start_document: Mapping[str, Any],
         update: LiveArrayData | LiveArrayRef | LiveTableData,
     ) -> None:
         with self._lock:
@@ -343,6 +434,8 @@ class BlueskyStreamSubscription:
                 stream_name=self._stream_name,
                 data_keys=data_keys,
                 update=update,
+                start_document=start_document,
+                sequence=update.sequence,
             )
         )
 
@@ -365,6 +458,7 @@ def subscribe_to_stream(
     *,
     start: int | None = 0,
     max_size: int = 1_000_000,
+    run_filter: Callable[[LiveChildCreated], bool] | None = None,
 ) -> BlueskyStreamSubscription:
     """
     Subscribe to selected data keys in a named live Bluesky event stream.
@@ -388,6 +482,12 @@ def subscribe_to_stream(
     max_size : int, optional
         Maximum incoming WebSocket message size in bytes. Defaults to
         ``1_000_000``.
+    run_filter : Callable[[LiveChildCreated], bool] or None, optional
+        Predicate called once for each raw Tiled run-creation update after its
+        ``BlueskyRun`` spec is confirmed. It can inspect the update's metadata,
+        specs, key, data sources, and ``child()`` helper. A
+        false result opens no run, stream, or data subscription. If it raises,
+        the manager logs the run UID and child URI, then skips that run.
 
     Returns
     -------
@@ -404,6 +504,13 @@ def subscribe_to_stream(
 
     Notes
     -----
+    The root catalog subscription is connected before this function returns, so
+    any code can subscribe before submitting its first plan. TiledWriter
+    closes its completed run subtree after successful finalization, releasing
+    descendant subscriptions after their native callbacks drain. Producers that
+    leave streams open retain their descendants until
+    :meth:`~BlueskyStreamSubscription.disconnect`.
+
     Co-located selected table columns are delivered together in Tiled's decoded
     table representation. Arrays and columns in separate physical tables are
     delivered independently; this function does not join or align updates across
@@ -430,4 +537,5 @@ def subscribe_to_stream(
         callback,
         start=start,
         max_size=max_size,
+        run_filter=run_filter,
     )
