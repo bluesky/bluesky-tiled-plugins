@@ -87,7 +87,7 @@ class BlueskyStreamUpdate:
 
 
 def _freeze_json(value: Any) -> Any:
-    """Create a read-only view of the of the value."""
+    """Create a recursively immutable JSON snapshot."""
     if isinstance(value, Mapping):
         return MappingProxyType(
             {key: _freeze_json(item) for key, item in value.items()}
@@ -147,8 +147,8 @@ class BlueskyStreamSubscription:
         max_size : int
             Maximum incoming WebSocket message size in bytes.
         run_filter : Callable[[LiveChildCreated], bool] or None
-            Optional raw Tiled run predicate. Use :func:`subscribe_to_stream`
-            for the public input boundary.
+            Optional raw Tiled run predicate. Use
+            :func:`subscribe_to_stream_filtered` for the public input boundary.
 
         Raises
         ------
@@ -450,6 +450,31 @@ def _normalize_data_keys(data_keys: str | Iterable[str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(data_keys))
 
 
+def _subscribe_to_stream(
+    catalog: Container,
+    stream_name: str,
+    data_keys: str | Iterable[str],
+    callback: Callable[[BlueskyStreamUpdate], None],
+    *,
+    start: int | None,
+    max_size: int,
+    run_filter: Callable[[LiveChildCreated], bool] | None,
+) -> BlueskyStreamSubscription:
+    selected_data_keys = _normalize_data_keys(data_keys)
+    if not selected_data_keys:
+        raise ValueError("At least one data key must be selected.")
+
+    return BlueskyStreamSubscription(
+        catalog,
+        stream_name,
+        selected_data_keys,
+        callback,
+        start=start,
+        max_size=max_size,
+        run_filter=run_filter,
+    )
+
+
 def subscribe_to_stream(
     catalog: Container,
     stream_name: str,
@@ -458,10 +483,9 @@ def subscribe_to_stream(
     *,
     start: int | None = 0,
     max_size: int = 1_000_000,
-    run_filter: Callable[[LiveChildCreated], bool] | None = None,
 ) -> BlueskyStreamSubscription:
     """
-    Subscribe to selected data keys in a named live Bluesky event stream.
+    Subscribe to selected data keys in every matching live Bluesky run.
 
     Parameters
     ----------
@@ -482,12 +506,6 @@ def subscribe_to_stream(
     max_size : int, optional
         Maximum incoming WebSocket message size in bytes. Defaults to
         ``1_000_000``.
-    run_filter : Callable[[LiveChildCreated], bool] or None, optional
-        Predicate called once for each raw Tiled run-creation update after its
-        ``BlueskyRun`` spec is confirmed. It can inspect the update's metadata,
-        specs, key, data sources, and ``child()`` helper. A
-        false result opens no run, stream, or data subscription. If it raises,
-        the manager logs the run UID and child URI, then skips that run.
 
     Returns
     -------
@@ -504,17 +522,12 @@ def subscribe_to_stream(
 
     Notes
     -----
-    The root catalog subscription is connected before this function returns, so
-    any code can subscribe before submitting its first plan. TiledWriter
-    closes its completed run subtree after successful finalization, releasing
-    descendant subscriptions after their native callbacks drain. Producers that
-    leave streams open retain their descendants until
-    :meth:`~BlueskyStreamSubscription.disconnect`.
-
-    Co-located selected table columns are delivered together in Tiled's decoded
-    table representation. Arrays and columns in separate physical tables are
-    delivered independently; this function does not join or align updates across
-    nodes.
+    The root catalog subscription is connected before this function returns.
+    Use :func:`subscribe_to_stream_filtered` or its metadata and spec
+    convenience wrappers to select a subset of runs. Co-located selected table
+    columns are delivered together in Tiled's decoded table representation.
+    Arrays and columns in separate physical tables are delivered independently;
+    this function does not join or align updates across nodes.
 
     Examples
     --------
@@ -526,16 +539,146 @@ def subscribe_to_stream(
     ... )
     >>> subscription.disconnect()
     """
-    selected_data_keys = _normalize_data_keys(data_keys)
-    if not selected_data_keys:
-        raise ValueError("At least one data key must be selected.")
-
-    return BlueskyStreamSubscription(
+    return _subscribe_to_stream(
         catalog,
         stream_name,
-        selected_data_keys,
+        data_keys,
+        callback,
+        start=start,
+        max_size=max_size,
+        run_filter=None,
+    )
+
+
+def subscribe_to_stream_filtered(
+    catalog: Container,
+    stream_name: str,
+    data_keys: str | Iterable[str],
+    callback: Callable[[BlueskyStreamUpdate], None],
+    *,
+    run_filter: Callable[[LiveChildCreated], bool],
+    start: int | None = 0,
+    max_size: int = 1_000_000,
+) -> BlueskyStreamSubscription:
+    """
+    Subscribe to selected data keys in live runs accepted by ``run_filter``.
+
+    Parameters
+    ----------
+    catalog, stream_name, data_keys, callback, start, max_size
+        Match :func:`subscribe_to_stream`.
+    run_filter : Callable[[tiled.client.stream.LiveChildCreated], bool]
+        Predicate called once for each raw Tiled run-creation update after its
+        ``BlueskyRun`` spec is confirmed and before any descendant subscription
+        is opened. It may inspect the persisted metadata, specs, key, data
+        sources, and :meth:`~tiled.client.stream.LiveChildCreated.child` helper.
+
+    Returns
+    -------
+    BlueskyStreamSubscription
+        A running managed subscription.
+
+    Raises
+    ------
+    ValueError
+        If ``data_keys`` normalizes to an empty selection.
+    Exception
+        Any error raised while Tiled establishes the root subscription.
+
+    Notes
+    -----
+    A false result opens no run, stream, or data subscription. Predicate
+    exceptions are logged with the run UID and child URI, then skip that run.
+    """
+    return _subscribe_to_stream(
+        catalog,
+        stream_name,
+        data_keys,
         callback,
         start=start,
         max_size=max_size,
         run_filter=run_filter,
+    )
+
+
+def subscribe_to_stream_by_metadata(
+    catalog: Container,
+    stream_name: str,
+    data_keys: str | Iterable[str],
+    callback: Callable[[BlueskyStreamUpdate], None],
+    *,
+    metadata_filter: Callable[[Mapping[str, Any]], bool],
+    start: int | None = 0,
+    max_size: int = 1_000_000,
+) -> BlueskyStreamSubscription:
+    """
+    Subscribe to selected data keys in runs accepted by ``metadata_filter``.
+
+    Parameters
+    ----------
+    catalog, stream_name, data_keys, callback, start, max_size
+        Match :func:`subscribe_to_stream`.
+    metadata_filter : Callable[[Mapping[str, Any]], bool]
+        Predicate applied to the stored ``metadata[\"start\"]`` mapping from the
+        raw Tiled run-creation update. A missing Start document is an empty
+        immutable mapping.
+
+    Returns
+    -------
+    BlueskyStreamSubscription
+        A running managed subscription.
+    """
+    return subscribe_to_stream_filtered(
+        catalog,
+        stream_name,
+        data_keys,
+        callback,
+        run_filter=lambda update: metadata_filter(
+            update.metadata.get("start", _EMPTY_START_DOCUMENT)
+        ),
+        start=start,
+        max_size=max_size,
+    )
+
+
+def subscribe_to_stream_by_spec(
+    catalog: Container,
+    stream_name: str,
+    data_keys: str | Iterable[str],
+    callback: Callable[[BlueskyStreamUpdate], None],
+    *,
+    required_specs: str | Iterable[str],
+    start: int | None = 0,
+    max_size: int = 1_000_000,
+) -> BlueskyStreamSubscription:
+    """
+    Subscribe to selected data keys in runs with every required spec name.
+
+    Parameters
+    ----------
+    catalog, stream_name, data_keys, callback, start, max_size
+        Match :func:`subscribe_to_stream`.
+    required_specs : str or iterable of str
+        One spec name or every spec name required for a run to match. Version
+        policies can use :func:`subscribe_to_stream_filtered` and inspect the
+        raw Tiled specs directly.
+
+    Returns
+    -------
+    BlueskyStreamSubscription
+        A running managed subscription.
+    """
+    required = (
+        frozenset((required_specs,))
+        if isinstance(required_specs, str)
+        else frozenset(required_specs)
+    )
+    return subscribe_to_stream_filtered(
+        catalog,
+        stream_name,
+        data_keys,
+        callback,
+        run_filter=lambda update: required <= {spec.name for spec in update.specs},
+        start=start,
+        max_size=max_size,
     )

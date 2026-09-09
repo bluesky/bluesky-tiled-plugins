@@ -79,13 +79,14 @@ alignment or missing-value behavior.
 
 ## Filter runs
 
-Pass `run_filter` to select runs before any run, event-stream, or data-node
-WebSocket is opened. It receives Tiled's raw `LiveChildCreated` update after the
-subscription confirms the child has the `BlueskyRun` spec, so it can inspect the
-persisted start metadata and custom specs without another catalog request.
+`subscribe_to_stream_filtered` accepts Tiled's raw `LiveChildCreated` update
+before opening any run, event-stream, or data-node WebSocket. It exposes the
+persisted start metadata and Tiled specs without another catalog request.
 
 ```python
 from tiled.client.stream import LiveChildCreated
+
+from bluesky_tiled_plugins import subscribe_to_stream_filtered
 
 
 def accepts_run(update: LiveChildCreated) -> bool:
@@ -95,7 +96,7 @@ def accepts_run(update: LiveChildCreated) -> bool:
     )
 
 
-subscription = subscribe_to_stream(
+subscription = subscribe_to_stream_filtered(
     tiled_client,
     "baseline",
     "x",
@@ -104,9 +105,33 @@ subscription = subscribe_to_stream(
 )
 ```
 
-The raw update also exposes its key, data sources, and `child()` helper. A false
-result skips that run entirely. If the predicate raises, the manager logs the
-run UID and child URI and skips that run; the root manager continues serving
+Use the convenience wrappers for common policies:
+
+```python
+from bluesky_tiled_plugins import (
+    subscribe_to_stream_by_metadata,
+    subscribe_to_stream_by_spec,
+)
+
+
+metadata_subscription = subscribe_to_stream_by_metadata(
+    tiled_client,
+    "baseline",
+    "x",
+    on_update,
+    metadata_filter=lambda start: start.get("proposal") == "calibration",
+)
+spec_subscription = subscribe_to_stream_by_spec(
+    tiled_client,
+    "baseline",
+    "x",
+    on_update,
+    required_specs=("XAS_Calib", "Calibration"),
+)
+```
+
+A false predicate result skips that run entirely. If a predicate raises, the
+manager logs the run UID and child URI, skips that run, and continues serving
 later matching runs.
 
 ## Readiness and lifetime

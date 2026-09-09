@@ -9,11 +9,15 @@ import pandas as pd
 import tiled.catalog
 from tiled.client import Context, from_context
 from tiled.server.app import build_app
+from tiled.client.stream import LiveChildCreated
 
 from bluesky_tiled_plugins import (
     BlueskyStreamUpdate,
     TiledWriter,
     subscribe_to_stream,
+    subscribe_to_stream_by_metadata,
+    subscribe_to_stream_by_spec,
+    subscribe_to_stream_filtered,
 )
 
 
@@ -257,7 +261,7 @@ def test_tiled_writer_stop_closes_run_stream_and_table_subscriptions(
             subscription.disconnect()
 
 
-def test_subscribe_to_stream_filters_runs(streaming_client):
+def test_subscribe_to_stream_filtered_runs(streaming_client):
     accepted_run_uid = uuid.uuid4().hex
     accepted_descriptor_uid = uuid.uuid4().hex
     rejected_run_uid = uuid.uuid4().hex
@@ -265,13 +269,15 @@ def test_subscribe_to_stream_filters_runs(streaming_client):
     updates: queue.Queue[BlueskyStreamUpdate] = queue.Queue()
     accepted_writer = TiledWriter(streaming_client, batch_size=1)
     rejected_writer = TiledWriter(streaming_client, batch_size=1)
+    seen_runs: list[LiveChildCreated] = []
 
-    def run_filter(update):
-        return update.metadata["start"]["route"]["accepted"] and any(
-            spec.name == "AcceptedRun" for spec in update.specs
+    def run_filter(run: LiveChildCreated):
+        seen_runs.append(run)
+        return run.metadata["start"]["route"]["accepted"] and any(
+            spec.name == "AcceptedRun" for spec in run.specs
         )
 
-    with subscribe_to_stream(
+    with subscribe_to_stream_filtered(
         streaming_client,
         "baseline",
         "x",
@@ -325,11 +331,156 @@ def test_subscribe_to_stream_filters_runs(streaming_client):
         with pytest.raises(queue.Empty):
             updates.get(timeout=1)
 
+    assert {run.key for run in seen_runs} == {accepted_run_uid, rejected_run_uid}
+    accepted_run = next(run for run in seen_runs if run.key == accepted_run_uid)
+    assert accepted_run.metadata["start"] == {
+        "uid": accepted_run_uid,
+        "time": 0.0,
+        "route": {"accepted": True},
+    }
+    assert {spec.name for spec in accepted_run.specs} == {"AcceptedRun", "BlueskyRun"}
+
     accepted_writer("stop", _stop_document(accepted_run_uid, {"baseline": 1}))
     rejected_writer("stop", _stop_document(rejected_run_uid, {"baseline": 1}))
 
 
-def test_subscribe_to_stream_logs_run_filter_failures(streaming_client, caplog):
+def test_subscribe_to_stream_metadata_and_spec_filters(streaming_client):
+    metadata_run_uid = uuid.uuid4().hex
+    metadata_descriptor_uid = uuid.uuid4().hex
+    spec_run_uid = uuid.uuid4().hex
+    spec_descriptor_uid = uuid.uuid4().hex
+    rejected_run_uid = uuid.uuid4().hex
+    rejected_descriptor_uid = uuid.uuid4().hex
+    metadata_updates: queue.Queue[BlueskyStreamUpdate] = queue.Queue()
+    spec_updates: queue.Queue[BlueskyStreamUpdate] = queue.Queue()
+    metadata_writer = TiledWriter(streaming_client, batch_size=1)
+    spec_writer = TiledWriter(streaming_client, batch_size=1)
+    rejected_writer = TiledWriter(streaming_client, batch_size=1)
+
+    with (
+        subscribe_to_stream_by_metadata(
+            streaming_client,
+            "baseline",
+            "x",
+            metadata_updates.put,
+            metadata_filter=lambda start: start["group"] == "metadata",
+        ),
+        subscribe_to_stream_by_spec(
+            streaming_client,
+            "baseline",
+            "x",
+            spec_updates.put,
+            required_specs=("Calibration", "Required"),
+        ),
+    ):
+        metadata_writer(
+            "start",
+            _start_document(
+                metadata_run_uid,
+                metadata={"group": "metadata"},
+                tiled_specs=["MetadataOnly"],
+            ),
+        )
+        metadata_writer(
+            "descriptor",
+            _descriptor_document(
+                metadata_run_uid,
+                metadata_descriptor_uid,
+                "baseline",
+                _scalar_data_keys("x"),
+            ),
+        )
+        metadata_writer(
+            "event", _event_document(metadata_descriptor_uid, 1, {"x": 1.0})
+        )
+        spec_writer(
+            "start",
+            _start_document(
+                spec_run_uid,
+                metadata={"group": "other"},
+                tiled_specs=[{"name": "Calibration", "version": "1.0"}, "Required"],
+            ),
+        )
+        spec_writer(
+            "descriptor",
+            _descriptor_document(
+                spec_run_uid,
+                spec_descriptor_uid,
+                "baseline",
+                _scalar_data_keys("x"),
+            ),
+        )
+        spec_writer("event", _event_document(spec_descriptor_uid, 1, {"x": 2.0}))
+        rejected_writer(
+            "start",
+            _start_document(
+                rejected_run_uid,
+                metadata={"group": "other"},
+                tiled_specs=["Calibration"],
+            ),
+        )
+        rejected_writer(
+            "descriptor",
+            _descriptor_document(
+                rejected_run_uid,
+                rejected_descriptor_uid,
+                "baseline",
+                _scalar_data_keys("x"),
+            ),
+        )
+        rejected_writer(
+            "event", _event_document(rejected_descriptor_uid, 1, {"x": 3.0})
+        )
+
+        metadata_update = metadata_updates.get(timeout=5)
+        assert metadata_update.run_uid == metadata_run_uid
+        spec_update = spec_updates.get(timeout=5)
+        assert spec_update.run_uid == spec_run_uid
+        with pytest.raises(queue.Empty):
+            metadata_updates.get(timeout=1)
+        with pytest.raises(queue.Empty):
+            spec_updates.get(timeout=1)
+
+    metadata_writer("stop", _stop_document(metadata_run_uid, {"baseline": 1}))
+    spec_writer("stop", _stop_document(spec_run_uid, {"baseline": 1}))
+    rejected_writer("stop", _stop_document(rejected_run_uid, {"baseline": 1}))
+
+
+def test_subscribe_to_stream_by_spec_accepts_single_spec(streaming_client):
+    run_uid = uuid.uuid4().hex
+    descriptor_uid = uuid.uuid4().hex
+    updates: queue.Queue[BlueskyStreamUpdate] = queue.Queue()
+    writer = TiledWriter(streaming_client, batch_size=1)
+
+    with subscribe_to_stream_by_spec(
+        streaming_client,
+        "baseline",
+        "x",
+        updates.put,
+        required_specs="Calibration",
+    ):
+        writer(
+            "start",
+            _start_document(run_uid, tiled_specs=["Calibration"]),
+        )
+        writer(
+            "descriptor",
+            _descriptor_document(
+                run_uid,
+                descriptor_uid,
+                "baseline",
+                _scalar_data_keys("x"),
+            ),
+        )
+        writer("event", _event_document(descriptor_uid, 1, {"x": 1.0}))
+
+        update = updates.get(timeout=5)
+        assert update.run_uid == run_uid
+
+    writer("stop", _stop_document(run_uid, {"baseline": 1}))
+
+
+def test_subscribe_to_stream_logs_filtered_run_failures(streaming_client, caplog):
     rejected_run_uid = uuid.uuid4().hex
     rejected_descriptor_uid = uuid.uuid4().hex
     accepted_run_uid = uuid.uuid4().hex
@@ -340,15 +491,15 @@ def test_subscribe_to_stream_logs_run_filter_failures(streaming_client, caplog):
 
     failed_uri: str | None = None
 
-    def run_filter(update):
+    def run_filter(run: LiveChildCreated):
         nonlocal failed_uri
-        if update.metadata["start"]["route"] == "raise":
-            failed_uri = str(update.uri)
+        if run.metadata["start"]["route"] == "raise":
+            failed_uri = str(run.uri)
             raise RuntimeError("known predicate failure")
         return True
 
     with caplog.at_level(logging.ERROR, logger="bluesky_tiled_plugins.streaming"):
-        with subscribe_to_stream(
+        with subscribe_to_stream_filtered(
             streaming_client,
             "baseline",
             "x",
@@ -395,10 +546,13 @@ def test_subscribe_to_stream_logs_run_filter_failures(streaming_client, caplog):
                 updates.get(timeout=1)
 
     assert failed_uri is not None
-    assert any(
-        rejected_run_uid in record.getMessage() and failed_uri in record.getMessage()
+    failure_message = next(
+        record.getMessage()
         for record in caplog.records
+        if rejected_run_uid in record.getMessage()
     )
+    assert f"Tiled run {rejected_run_uid} at " in failure_message
+    assert failed_uri in failure_message
     rejected_writer("stop", _stop_document(rejected_run_uid, {"baseline": 1}))
     accepted_writer("stop", _stop_document(accepted_run_uid, {"baseline": 1}))
 

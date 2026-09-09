@@ -5,6 +5,9 @@ from .streaming import (
     BlueskyStreamSubscription,
     BlueskyStreamUpdate,
     subscribe_to_stream,
+    subscribe_to_stream_by_metadata,
+    subscribe_to_stream_by_spec,
+    subscribe_to_stream_filtered,
 )
 from .writing.tiled_writer import TiledWriter, TiledInserter
 
@@ -17,4 +20,7 @@ __all__ = [
     "TiledInserter",
     "TiledWriter",
     "subscribe_to_stream",
+    "subscribe_to_stream_by_metadata",
+    "subscribe_to_stream_by_spec",
+    "subscribe_to_stream_filtered",
 ]
