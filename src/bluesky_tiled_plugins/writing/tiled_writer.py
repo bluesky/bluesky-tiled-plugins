@@ -942,7 +942,8 @@ class _RunWriter(DocumentRouter):
         if self.root_node is None:
             return
 
-        nodes: dict[str, BaseClient] = {}
+        seen_uris: set[str] = set()
+        first_error: Exception | None = None
         for node in itertools.chain(
             self._internal_arrays.values(),
             self._internal_tables.values(),
@@ -950,10 +951,9 @@ class _RunWriter(DocumentRouter):
             self._desc_nodes.values(),
             (self.root_node,),
         ):
-            nodes.setdefault(node.uri, node)
-
-        first_error: Exception | None = None
-        for node in nodes.values():
+            if node.uri in seen_uris:
+                continue
+            seen_uris.add(node.uri)
             try:
                 node.close_stream()
             except Exception as error:
