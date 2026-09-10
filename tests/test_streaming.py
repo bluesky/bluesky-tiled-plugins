@@ -704,7 +704,7 @@ def test_subscribe_to_stream_delivers_stream_datum_without_events(
                 {
                     "uid": resource_uid,
                     "data_key": "image",
-                    "uri": f"file://localhost{data_path}",
+                    "uri": data_path.as_uri(),
                     "mimetype": "application/x-hdf5",
                     "parameters": {
                         "dataset": "/entry/data/image",
