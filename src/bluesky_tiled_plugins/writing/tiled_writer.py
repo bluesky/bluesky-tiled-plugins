@@ -1174,13 +1174,6 @@ class _RunWriter(DocumentRouter):
 
 
 class TiledWriter:
-    """Write Bluesky documents to Tiled.
-
-    After successful Stop finalization, closes every data, event-stream, and run
-    node it owns so live Tiled subscriptions drain and close while the catalog
-    remains live.
-    """
-
     def __init__(
         self,
         client: BaseClient,
