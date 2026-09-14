@@ -14,10 +14,7 @@ from tiled.client.stream import LiveChildCreated
 from bluesky_tiled_plugins import (
     BlueskyStreamUpdate,
     TiledWriter,
-    subscribe_to_stream,
-    subscribe_to_stream_by_metadata,
-    subscribe_to_stream_by_spec,
-    subscribe_to_stream_filtered,
+    subscribe_to_streams,
 )
 
 
@@ -112,23 +109,32 @@ def _subscribe_until_closed(node, closed, name, attach=None):
     return subscription, on_closed
 
 
-def test_subscribe_to_stream_filters_table_columns_and_disconnects(streaming_client):
+def test_subscribe_to_streams_filters_table_columns_and_disconnects(streaming_client):
     run_uid = uuid.uuid4().hex
     baseline_descriptor_uid = uuid.uuid4().hex
     primary_descriptor_uid = uuid.uuid4().hex
-    updates: queue.Queue[BlueskyStreamUpdate] = queue.Queue()
+    updates: queue.Queue[tuple[BlueskyStreamUpdate, dict]] = queue.Queue()
     writer = TiledWriter(streaming_client, batch_size=1)
-    subscription = subscribe_to_stream(
-        streaming_client, "baseline", ("x", "y"), updates.put
+
+    def on_update(update: BlueskyStreamUpdate) -> None:
+        start_document = (
+            streaming_client[update.run_uid].metadata_copy()[0].get("start", {})
+        )
+        updates.put((update, start_document))
+
+    subscription = subscribe_to_streams(
+        streaming_client, on_update, streams={"baseline": ("x", "y")}
     )
 
     try:
-        start_document = _start_document(
-            run_uid,
-            metadata={"sample": {"name": "sample", "tags": ["calibration"]}},
-            tiled_specs=[{"name": "XAS_Calib", "version": "1.0"}],
+        writer(
+            "start",
+            _start_document(
+                run_uid,
+                metadata={"sample": {"name": "sample", "tags": ["calibration"]}},
+                tiled_specs=[{"name": "XAS_Calib", "version": "1.0"}],
+            ),
         )
-        writer("start", start_document)
         writer(
             "descriptor",
             _descriptor_document(
@@ -147,7 +153,7 @@ def test_subscribe_to_stream_filters_table_columns_and_disconnects(streaming_cli
             ),
         )
 
-        update = updates.get(timeout=5)
+        update, start_document = updates.get(timeout=5)
         assert update.run_uid == run_uid
         assert update.stream_name == "baseline"
         assert update.data_keys == ("x", "y")
@@ -155,20 +161,31 @@ def test_subscribe_to_stream_filters_table_columns_and_disconnects(streaming_cli
         assert isinstance(table, pd.DataFrame)
         assert list(table.columns) == ["x", "y"]
         assert table.to_dict(orient="list") == {"x": [1.0], "y": [2.0]}
-        assert update.start_document == {
+        assert start_document == {
             "uid": run_uid,
             "time": 0.0,
-            "sample": {"name": "sample", "tags": ("calibration",)},
+            "sample": {"name": "sample", "tags": ["calibration"]},
         }
-        assert "tiled_specs" not in update.start_document
-        with pytest.raises(TypeError):
-            update.start_document["extra"] = "value"
-        with pytest.raises(TypeError):
-            update.start_document["sample"]["name"] = "other"
-        with pytest.raises(AttributeError):
-            update.start_document["sample"]["tags"].append("other")
+        assert "tiled_specs" not in start_document
+        start_document["sample"]["tags"].append("local mutation")
         assert update.sequence == update.update.sequence
         assert update.sequence > 0
+
+        writer(
+            "event",
+            _event_document(
+                baseline_descriptor_uid,
+                2,
+                {"x": 7.0, "y": 8.0, "z": 9.0},
+            ),
+        )
+        second_update, second_start_document = updates.get(timeout=5)
+        assert second_update.data().to_dict(orient="list") == {
+            "x": [7.0],
+            "y": [8.0],
+        }
+        assert second_start_document["sample"]["tags"] == ["calibration"]
+
         writer(
             "descriptor",
             _descriptor_document(
@@ -196,15 +213,301 @@ def test_subscribe_to_stream_filters_table_columns_and_disconnects(streaming_cli
             "event",
             _event_document(
                 baseline_descriptor_uid,
-                2,
-                {"x": 7.0, "y": 8.0, "z": 9.0},
+                3,
+                {"x": 10.0, "y": 11.0, "z": 12.0},
             ),
         )
         with pytest.raises(queue.Empty):
             updates.get(timeout=1)
     finally:
         subscription.disconnect()
-        writer("stop", _stop_document(run_uid, {"baseline": 2, "primary": 1}))
+        writer("stop", _stop_document(run_uid, {"baseline": 3, "primary": 1}))
+
+
+def test_subscribe_to_streams_delivers_multiple_streams(streaming_client):
+    run_uid = uuid.uuid4().hex
+    baseline_descriptor_uid = uuid.uuid4().hex
+    primary_descriptor_uid = uuid.uuid4().hex
+    diagnostics_descriptor_uid = uuid.uuid4().hex
+    updates: queue.Queue[BlueskyStreamUpdate] = queue.Queue()
+    writer = TiledWriter(streaming_client, batch_size=1)
+
+    with subscribe_to_streams(
+        streaming_client,
+        updates.put,
+        streams={"baseline": ("x", "y"), "primary": None},
+    ):
+        writer("start", _start_document(run_uid))
+        writer(
+            "descriptor",
+            _descriptor_document(
+                run_uid,
+                baseline_descriptor_uid,
+                "baseline",
+                _scalar_data_keys("x", "y", "z"),
+            ),
+        )
+        writer(
+            "event",
+            _event_document(
+                baseline_descriptor_uid,
+                1,
+                {"x": 1.0, "y": 2.0, "z": 3.0},
+            ),
+        )
+        baseline_update = updates.get(timeout=5)
+        assert baseline_update.stream_name == "baseline"
+        assert baseline_update.data_keys == ("x", "y")
+        assert baseline_update.data().to_dict(orient="list") == {
+            "x": [1.0],
+            "y": [2.0],
+        }
+
+        writer(
+            "descriptor",
+            _descriptor_document(
+                run_uid,
+                primary_descriptor_uid,
+                "primary",
+                _scalar_data_keys("signal"),
+            ),
+        )
+        writer(
+            "event",
+            _event_document(primary_descriptor_uid, 1, {"signal": 4.0}),
+        )
+        primary_update = updates.get(timeout=5)
+        assert primary_update.stream_name == "primary"
+        assert primary_update.data_keys == ("signal",)
+        assert primary_update.data().to_dict(orient="list") == {"signal": [4.0]}
+
+        writer(
+            "descriptor",
+            _descriptor_document(
+                run_uid,
+                diagnostics_descriptor_uid,
+                "diagnostics",
+                _scalar_data_keys("x"),
+            ),
+        )
+        writer(
+            "event",
+            _event_document(diagnostics_descriptor_uid, 1, {"x": 5.0}),
+        )
+        with pytest.raises(queue.Empty):
+            updates.get(timeout=1)
+
+    writer(
+        "stop",
+        _stop_document(run_uid, {"baseline": 1, "primary": 1, "diagnostics": 1}),
+    )
+
+
+def test_subscribe_to_streams_selects_every_stream_when_none(streaming_client):
+    run_uid = uuid.uuid4().hex
+    baseline_descriptor_uid = uuid.uuid4().hex
+    primary_descriptor_uid = uuid.uuid4().hex
+    updates: queue.Queue[BlueskyStreamUpdate] = queue.Queue()
+    writer = TiledWriter(streaming_client, batch_size=1)
+
+    with subscribe_to_streams(streaming_client, updates.put, streams=None):
+        writer("start", _start_document(run_uid))
+        writer(
+            "descriptor",
+            _descriptor_document(
+                run_uid,
+                baseline_descriptor_uid,
+                "baseline",
+                _scalar_data_keys("x", "y"),
+            ),
+        )
+        writer(
+            "event",
+            _event_document(baseline_descriptor_uid, 1, {"x": 1.0, "y": 2.0}),
+        )
+        baseline_update = updates.get(timeout=5)
+        assert baseline_update.stream_name == "baseline"
+        assert baseline_update.data_keys == ("x", "y")
+        assert baseline_update.data().to_dict(orient="list") == {
+            "x": [1.0],
+            "y": [2.0],
+        }
+
+        writer(
+            "descriptor",
+            _descriptor_document(
+                run_uid,
+                primary_descriptor_uid,
+                "primary",
+                _scalar_data_keys("signal"),
+            ),
+        )
+        writer(
+            "event",
+            _event_document(primary_descriptor_uid, 1, {"signal": 3.0}),
+        )
+        primary_update = updates.get(timeout=5)
+        assert primary_update.stream_name == "primary"
+        assert primary_update.data_keys == ("signal",)
+        assert primary_update.data().to_dict(orient="list") == {"signal": [3.0]}
+
+    writer("stop", _stop_document(run_uid, {"baseline": 1, "primary": 1}))
+
+
+def test_subscribe_to_streams_selects_all_native_batches(streaming_client):
+    run_uid = uuid.uuid4().hex
+    descriptor_uid = uuid.uuid4().hex
+    updates: queue.Queue[BlueskyStreamUpdate] = queue.Queue()
+    writer = TiledWriter(streaming_client, batch_size=2, max_array_size=0)
+    data_keys = _scalar_data_keys("x", "y", "z")
+    data_keys["image"] = {
+        "source": "sim",
+        "dtype": "array",
+        "dtype_numpy": "<i8",
+        "shape": [2],
+        "object_name": "det",
+    }
+
+    with subscribe_to_streams(
+        streaming_client, updates.put, streams={"baseline": None}
+    ):
+        writer("start", _start_document(run_uid))
+        writer(
+            "descriptor",
+            _descriptor_document(
+                run_uid,
+                descriptor_uid,
+                "baseline",
+                data_keys,
+            ),
+        )
+        writer(
+            "event",
+            _event_document(
+                descriptor_uid,
+                1,
+                {"x": 1.0, "y": 2.0, "z": 3.0, "image": [10, 11]},
+            ),
+        )
+        writer(
+            "event",
+            _event_document(
+                descriptor_uid,
+                2,
+                {"x": 4.0, "y": 5.0, "z": 6.0, "image": [12, 13]},
+            ),
+        )
+
+        delivered = [updates.get(timeout=5), updates.get(timeout=5)]
+        updates_by_keys = {update.data_keys: update for update in delivered}
+        assert set(updates_by_keys) == {("x", "y", "z"), ("image",)}
+
+        table = updates_by_keys[("x", "y", "z")].data()
+        assert isinstance(table, pd.DataFrame)
+        assert tuple(table.columns) == ("x", "y", "z")
+        assert table.to_dict(orient="list") == {
+            "x": [1.0, 4.0],
+            "y": [2.0, 5.0],
+            "z": [3.0, 6.0],
+        }
+        np.testing.assert_array_equal(
+            updates_by_keys[("image",)].data(), [[10, 11], [12, 13]]
+        )
+
+    writer("stop", _stop_document(run_uid, {"baseline": 2}))
+
+
+def test_subscribe_to_streams_skips_ragged_and_bytes_nodes(streaming_client, tmp_path):
+    run_uid = uuid.uuid4().hex
+    descriptor_uid = uuid.uuid4().hex
+    resource_uid = uuid.uuid4().hex
+    updates: queue.Queue[BlueskyStreamUpdate] = queue.Queue()
+    closed: queue.Queue[str] = queue.Queue()
+    writer = TiledWriter(streaming_client, batch_size=1)
+    blob_path = tmp_path / "blob.bin"
+    blob_path.write_bytes(b"\x00")
+    data_keys = _scalar_data_keys("x")
+    data_keys.update(
+        {
+            "ragged": {
+                "source": "sim",
+                "dtype": "array",
+                "shape": [2, None],
+                "object_name": "det",
+            },
+            "blob": {
+                "source": "file",
+                "dtype": "array",
+                "dtype_numpy": "|u1",
+                "shape": [1],
+                "external": "STREAM:",
+                "object_name": "det",
+            },
+        }
+    )
+    drain_subscription = None
+
+    try:
+        with subscribe_to_streams(
+            streaming_client, updates.put, streams={"baseline": None}
+        ):
+            writer("start", _start_document(run_uid))
+            writer(
+                "descriptor",
+                _descriptor_document(
+                    run_uid,
+                    descriptor_uid,
+                    "baseline",
+                    data_keys,
+                ),
+            )
+            writer(
+                "event",
+                _event_document(
+                    descriptor_uid,
+                    1,
+                    {"x": 1.0, "ragged": [[1, 2, 3], [4, 5]]},
+                ),
+            )
+            writer(
+                "stream_resource",
+                {
+                    "uid": resource_uid,
+                    "data_key": "blob",
+                    "uri": blob_path.as_uri(),
+                    "mimetype": "application/octet-stream",
+                    "parameters": {},
+                    "run_start": run_uid,
+                },
+            )
+            writer(
+                "stream_datum",
+                {
+                    "uid": f"{resource_uid}/0",
+                    "stream_resource": resource_uid,
+                    "descriptor": descriptor_uid,
+                    "indices": {"start": 0, "stop": 1},
+                    "seq_nums": {"start": 1, "stop": 2},
+                },
+            )
+            drain_subscription, drain_closed = _subscribe_until_closed(
+                streaming_client[run_uid], closed, "run"
+            )
+            writer("stop", _stop_document(run_uid, {"baseline": 1}))
+            assert closed.get(timeout=5) == "run"
+
+            delivered = []
+            while True:
+                try:
+                    delivered.append(updates.get_nowait())
+                except queue.Empty:
+                    break
+            assert len(delivered) == 1
+            assert delivered[0].data_keys == ("x",)
+            assert delivered[0].data().to_dict(orient="list") == {"x": [1.0]}
+    finally:
+        if drain_subscription is not None:
+            drain_subscription.disconnect()
 
 
 def test_tiled_writer_stop_closes_run_stream_and_table_subscriptions(
@@ -261,202 +564,111 @@ def test_tiled_writer_stop_closes_run_stream_and_table_subscriptions(
             subscription.disconnect()
 
 
-def test_subscribe_to_stream_filtered_runs(streaming_client):
-    accepted_run_uid = uuid.uuid4().hex
-    accepted_descriptor_uid = uuid.uuid4().hex
-    rejected_run_uid = uuid.uuid4().hex
-    rejected_descriptor_uid = uuid.uuid4().hex
+@pytest.mark.parametrize(
+    ("metadata", "specs", "expected_delivery", "expected_run_filter"),
+    [
+        pytest.param(
+            {"group": "rejected", "route": "accepted"},
+            ["Calibration", "Required"],
+            False,
+            False,
+            id="metadata-mismatch",
+        ),
+        pytest.param(
+            {"group": "accepted", "route": "accepted"},
+            ["Calibration"],
+            False,
+            False,
+            id="spec-mismatch",
+        ),
+        pytest.param(
+            {"group": "accepted", "route": "rejected"},
+            ["Calibration", "Required"],
+            False,
+            True,
+            id="raw-filter-mismatch",
+        ),
+        pytest.param(
+            {"group": "accepted", "route": "accepted"},
+            ["Calibration", "Required"],
+            True,
+            True,
+            id="accepted",
+        ),
+    ],
+)
+def test_subscribe_to_streams_combines_filters(
+    streaming_client,
+    metadata,
+    specs,
+    expected_delivery,
+    expected_run_filter,
+):
+    run_uid = uuid.uuid4().hex
+    descriptor_uid = uuid.uuid4().hex
     updates: queue.Queue[BlueskyStreamUpdate] = queue.Queue()
-    accepted_writer = TiledWriter(streaming_client, batch_size=1)
-    rejected_writer = TiledWriter(streaming_client, batch_size=1)
-    seen_runs: list[LiveChildCreated] = []
+    metadata_seen: list[str] = []
+    run_filter_seen: list[str] = []
+    writer = TiledWriter(streaming_client, batch_size=1)
 
-    def run_filter(run: LiveChildCreated):
-        seen_runs.append(run)
-        return run.metadata["start"]["route"]["accepted"] and any(
-            spec.name == "AcceptedRun" for spec in run.specs
-        )
+    def metadata_filter(start):
+        metadata_seen.append(start["uid"])
+        return start["group"] == "accepted"
 
-    with subscribe_to_stream_filtered(
+    def run_filter(update: LiveChildCreated):
+        run_filter_seen.append(update.key)
+        return update.metadata["start"]["route"] == "accepted"
+
+    with subscribe_to_streams(
         streaming_client,
-        "baseline",
-        "x",
         updates.put,
+        streams={"baseline": "x"},
+        metadata_filter=metadata_filter,
+        required_specs=("Calibration", "Required"),
         run_filter=run_filter,
     ):
-        accepted_writer(
+        writer(
             "start",
             _start_document(
-                accepted_run_uid,
-                metadata={"route": {"accepted": True}},
-                tiled_specs=[{"name": "AcceptedRun", "version": "1.0"}],
+                run_uid,
+                metadata=metadata,
+                tiled_specs=specs,
             ),
         )
-        accepted_writer(
+        writer(
             "descriptor",
             _descriptor_document(
-                accepted_run_uid,
-                accepted_descriptor_uid,
+                run_uid,
+                descriptor_uid,
                 "baseline",
                 _scalar_data_keys("x"),
             ),
         )
-        accepted_writer(
-            "event", _event_document(accepted_descriptor_uid, 1, {"x": 1.0})
-        )
-        rejected_writer(
-            "start",
-            _start_document(
-                rejected_run_uid,
-                metadata={"route": {"accepted": False}},
-                tiled_specs=[{"name": "RejectedRun", "version": "1.0"}],
-            ),
-        )
-        rejected_writer(
-            "descriptor",
-            _descriptor_document(
-                rejected_run_uid,
-                rejected_descriptor_uid,
-                "baseline",
-                _scalar_data_keys("x"),
-            ),
-        )
-        rejected_writer(
-            "event", _event_document(rejected_descriptor_uid, 1, {"x": 2.0})
-        )
+        writer("event", _event_document(descriptor_uid, 1, {"x": 1.0}))
 
-        update = updates.get(timeout=5)
-        assert update.run_uid == accepted_run_uid
-        assert update.data().to_dict(orient="list") == {"x": [1.0]}
-        with pytest.raises(queue.Empty):
-            updates.get(timeout=1)
+        if expected_delivery:
+            update = updates.get(timeout=5)
+            assert update.run_uid == run_uid
+            assert update.data().to_dict(orient="list") == {"x": [1.0]}
+        else:
+            with pytest.raises(queue.Empty):
+                updates.get(timeout=1)
 
-    assert {run.key for run in seen_runs} == {accepted_run_uid, rejected_run_uid}
-    accepted_run = next(run for run in seen_runs if run.key == accepted_run_uid)
-    assert accepted_run.metadata["start"] == {
-        "uid": accepted_run_uid,
-        "time": 0.0,
-        "route": {"accepted": True},
-    }
-    assert {spec.name for spec in accepted_run.specs} == {"AcceptedRun", "BlueskyRun"}
-
-    accepted_writer("stop", _stop_document(accepted_run_uid, {"baseline": 1}))
-    rejected_writer("stop", _stop_document(rejected_run_uid, {"baseline": 1}))
+    assert metadata_seen == [run_uid]
+    assert run_filter_seen == ([run_uid] if expected_run_filter else [])
+    writer("stop", _stop_document(run_uid, {"baseline": 1}))
 
 
-def test_subscribe_to_stream_metadata_and_spec_filters(streaming_client):
-    metadata_run_uid = uuid.uuid4().hex
-    metadata_descriptor_uid = uuid.uuid4().hex
-    spec_run_uid = uuid.uuid4().hex
-    spec_descriptor_uid = uuid.uuid4().hex
-    rejected_run_uid = uuid.uuid4().hex
-    rejected_descriptor_uid = uuid.uuid4().hex
-    metadata_updates: queue.Queue[BlueskyStreamUpdate] = queue.Queue()
-    spec_updates: queue.Queue[BlueskyStreamUpdate] = queue.Queue()
-    metadata_writer = TiledWriter(streaming_client, batch_size=1)
-    spec_writer = TiledWriter(streaming_client, batch_size=1)
-    rejected_writer = TiledWriter(streaming_client, batch_size=1)
-
-    with (
-        subscribe_to_stream_by_metadata(
-            streaming_client,
-            "baseline",
-            "x",
-            metadata_updates.put,
-            metadata_filter=lambda start: start["group"] == "metadata",
-        ),
-        subscribe_to_stream_by_spec(
-            streaming_client,
-            "baseline",
-            "x",
-            spec_updates.put,
-            required_specs=("Calibration", "Required"),
-        ),
-    ):
-        metadata_writer(
-            "start",
-            _start_document(
-                metadata_run_uid,
-                metadata={"group": "metadata"},
-                tiled_specs=["MetadataOnly"],
-            ),
-        )
-        metadata_writer(
-            "descriptor",
-            _descriptor_document(
-                metadata_run_uid,
-                metadata_descriptor_uid,
-                "baseline",
-                _scalar_data_keys("x"),
-            ),
-        )
-        metadata_writer(
-            "event", _event_document(metadata_descriptor_uid, 1, {"x": 1.0})
-        )
-        spec_writer(
-            "start",
-            _start_document(
-                spec_run_uid,
-                metadata={"group": "other"},
-                tiled_specs=[{"name": "Calibration", "version": "1.0"}, "Required"],
-            ),
-        )
-        spec_writer(
-            "descriptor",
-            _descriptor_document(
-                spec_run_uid,
-                spec_descriptor_uid,
-                "baseline",
-                _scalar_data_keys("x"),
-            ),
-        )
-        spec_writer("event", _event_document(spec_descriptor_uid, 1, {"x": 2.0}))
-        rejected_writer(
-            "start",
-            _start_document(
-                rejected_run_uid,
-                metadata={"group": "other"},
-                tiled_specs=["Calibration"],
-            ),
-        )
-        rejected_writer(
-            "descriptor",
-            _descriptor_document(
-                rejected_run_uid,
-                rejected_descriptor_uid,
-                "baseline",
-                _scalar_data_keys("x"),
-            ),
-        )
-        rejected_writer(
-            "event", _event_document(rejected_descriptor_uid, 1, {"x": 3.0})
-        )
-
-        metadata_update = metadata_updates.get(timeout=5)
-        assert metadata_update.run_uid == metadata_run_uid
-        spec_update = spec_updates.get(timeout=5)
-        assert spec_update.run_uid == spec_run_uid
-        with pytest.raises(queue.Empty):
-            metadata_updates.get(timeout=1)
-        with pytest.raises(queue.Empty):
-            spec_updates.get(timeout=1)
-
-    metadata_writer("stop", _stop_document(metadata_run_uid, {"baseline": 1}))
-    spec_writer("stop", _stop_document(spec_run_uid, {"baseline": 1}))
-    rejected_writer("stop", _stop_document(rejected_run_uid, {"baseline": 1}))
-
-
-def test_subscribe_to_stream_by_spec_accepts_single_spec(streaming_client):
+def test_subscribe_to_streams_accepts_single_required_spec(streaming_client):
     run_uid = uuid.uuid4().hex
     descriptor_uid = uuid.uuid4().hex
     updates: queue.Queue[BlueskyStreamUpdate] = queue.Queue()
     writer = TiledWriter(streaming_client, batch_size=1)
 
-    with subscribe_to_stream_by_spec(
+    with subscribe_to_streams(
         streaming_client,
-        "baseline",
-        "x",
         updates.put,
+        streams={"baseline": "x"},
         required_specs="Calibration",
     ):
         writer(
@@ -480,7 +692,7 @@ def test_subscribe_to_stream_by_spec_accepts_single_spec(streaming_client):
     writer("stop", _stop_document(run_uid, {"baseline": 1}))
 
 
-def test_subscribe_to_stream_logs_filtered_run_failures(streaming_client, caplog):
+def test_subscribe_to_streams_logs_filtered_run_failures(streaming_client, caplog):
     rejected_run_uid = uuid.uuid4().hex
     rejected_descriptor_uid = uuid.uuid4().hex
     accepted_run_uid = uuid.uuid4().hex
@@ -499,11 +711,10 @@ def test_subscribe_to_stream_logs_filtered_run_failures(streaming_client, caplog
         return True
 
     with caplog.at_level(logging.ERROR, logger="bluesky_tiled_plugins.streaming"):
-        with subscribe_to_stream_filtered(
+        with subscribe_to_streams(
             streaming_client,
-            "baseline",
-            "x",
             updates.put,
+            streams={"baseline": "x"},
             run_filter=run_filter,
         ):
             rejected_writer(
@@ -557,7 +768,7 @@ def test_subscribe_to_stream_logs_filtered_run_failures(streaming_client, caplog
     accepted_writer("stop", _stop_document(accepted_run_uid, {"baseline": 1}))
 
 
-def test_subscribe_to_stream_stays_open_after_completed_run_drains(streaming_client):
+def test_subscribe_to_streams_stays_open_after_completed_run_drains(streaming_client):
     first_run_uid = uuid.uuid4().hex
     first_descriptor_uid = uuid.uuid4().hex
     second_run_uid = uuid.uuid4().hex
@@ -565,7 +776,9 @@ def test_subscribe_to_stream_stays_open_after_completed_run_drains(streaming_cli
     updates: queue.Queue[BlueskyStreamUpdate] = queue.Queue()
     closed: queue.Queue[str] = queue.Queue()
     writer = TiledWriter(streaming_client, batch_size=1)
-    subscription = subscribe_to_stream(streaming_client, "baseline", "x", updates.put)
+    subscription = subscribe_to_streams(
+        streaming_client, updates.put, streams={"baseline": "x"}
+    )
     drain_subscription = None
 
     try:
@@ -613,7 +826,7 @@ def test_subscribe_to_stream_stays_open_after_completed_run_drains(streaming_cli
     writer("stop", _stop_document(second_run_uid, {"baseline": 1}))
 
 
-def test_subscribe_to_stream_delivers_selected_array(streaming_client):
+def test_subscribe_to_streams_delivers_selected_array(streaming_client):
     run_uid = uuid.uuid4().hex
     descriptor_uid = uuid.uuid4().hex
     updates: queue.Queue[BlueskyStreamUpdate] = queue.Queue()
@@ -622,7 +835,9 @@ def test_subscribe_to_stream_delivers_selected_array(streaming_client):
     data_subscription = None
 
     try:
-        with subscribe_to_stream(streaming_client, "baseline", "image", updates.put):
+        with subscribe_to_streams(
+            streaming_client, updates.put, streams={"baseline": "image"}
+        ):
             writer("start", _start_document(run_uid))
             writer(
                 "descriptor",
@@ -659,7 +874,7 @@ def test_subscribe_to_stream_delivers_selected_array(streaming_client):
             data_subscription.disconnect()
 
 
-def test_subscribe_to_stream_delivers_stream_datum_without_events(
+def test_subscribe_to_streams_delivers_stream_datum_without_events(
     streaming_client, tmp_path
 ):
     expected = np.array([[1, 2]], dtype="<i8")
@@ -678,7 +893,9 @@ def test_subscribe_to_stream_delivers_stream_datum_without_events(
     data_subscription = None
 
     try:
-        with subscribe_to_stream(streaming_client, "baseline", "image", updates.put):
+        with subscribe_to_streams(
+            streaming_client, updates.put, streams={"baseline": "image"}
+        ):
             writer("start", _start_document(run_uid))
             writer(
                 "descriptor",
@@ -740,6 +957,15 @@ def test_subscribe_to_stream_delivers_stream_datum_without_events(
             data_subscription.disconnect()
 
 
-def test_subscribe_to_stream_rejects_empty_selection(streaming_client):
-    with pytest.raises(ValueError, match="At least one data key"):
-        subscribe_to_stream(streaming_client, "baseline", (), lambda update: None)
+@pytest.mark.parametrize(
+    ("streams", "message"),
+    [
+        ({}, "At least one stream"),
+        ({"baseline": ()}, "At least one data key.*'baseline'"),
+    ],
+)
+def test_subscribe_to_streams_rejects_empty_selection(
+    streaming_client, streams, message
+):
+    with pytest.raises(ValueError, match=message):
+        subscribe_to_streams(streaming_client, lambda update: None, streams=streams)

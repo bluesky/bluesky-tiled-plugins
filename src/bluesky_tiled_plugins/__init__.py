@@ -4,10 +4,7 @@ from .clients.catalog_of_bluesky_runs import CatalogOfBlueskyRuns
 from .streaming import (
     BlueskyStreamSubscription,
     BlueskyStreamUpdate,
-    subscribe_to_stream,
-    subscribe_to_stream_by_metadata,
-    subscribe_to_stream_by_spec,
-    subscribe_to_stream_filtered,
+    subscribe_to_streams,
 )
 from .writing.tiled_writer import TiledWriter, TiledInserter
 
@@ -19,8 +16,5 @@ __all__ = [
     "CatalogOfBlueskyRuns",
     "TiledInserter",
     "TiledWriter",
-    "subscribe_to_stream",
-    "subscribe_to_stream_by_metadata",
-    "subscribe_to_stream_by_spec",
-    "subscribe_to_stream_filtered",
+    "subscribe_to_streams",
 ]

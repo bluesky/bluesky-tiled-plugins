@@ -1,8 +1,8 @@
 import functools
 import logging
 import threading
-from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Protocol, cast
 
@@ -29,38 +29,29 @@ _EMPTY_START_DOCUMENT: Mapping[str, Any] = MappingProxyType({})
 @dataclass(frozen=True)
 class BlueskyStreamUpdate:
     """
-    A selected physical update from a Bluesky event stream.
+    A selected Tiled update from a Bluesky data stream.
 
     Parameters
     ----------
     run_uid : str
-        UID of the direct ``BlueskyRun`` parent that produced the update.
+        Key of the direct ``BlueskyRun`` parent.
     stream_name : str
-        Name of the Bluesky event stream containing the updated node.
+        Name of the Bluesky data stream containing the updated node.
     data_keys : tuple of str
-        Requested data keys represented by this physical update. A table update
+        Requested data keys represented by this update. A table update
         may contain several selected scalar keys; an array update contains one.
     update : LiveArrayData, LiveArrayRef, or LiveTableData
         Original Tiled live update. It is retained without decoding until
         :meth:`data` is called.
-    start_document : Mapping[str, Any]
-        Immutable snapshot of the Tiled-persisted run
-        ``metadata[\"start\"]``. It is empty when the matching run has no stored
-        start metadata. It represents stored metadata, not the inbound RunStart
-        document.
     sequence : int
         Native positive per-node Tiled streaming sequence number for ``update``.
         Use it to correlate updates and detect duplicates or gaps for one node.
-
     """
 
     run_uid: str
     stream_name: str
     data_keys: tuple[str, ...]
     update: LiveArrayData | LiveArrayRef | LiveTableData
-    start_document: Mapping[str, Any] = field(
-        default_factory=lambda: _EMPTY_START_DOCUMENT
-    )
     sequence: int = 0
 
     def data(self) -> Any:
@@ -86,17 +77,6 @@ class BlueskyStreamUpdate:
         return data
 
 
-def _freeze_json(value: Any) -> Any:
-    """Create a recursively immutable JSON snapshot."""
-    if isinstance(value, Mapping):
-        return MappingProxyType(
-            {key: _freeze_json(item) for key, item in value.items()}
-        )
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return tuple(_freeze_json(item) for item in value)
-    return value
-
-
 class _Subscribable(Protocol):
     @property
     def uri(self) -> str: ...
@@ -105,17 +85,12 @@ class _Subscribable(Protocol):
 
 
 class BlueskyStreamSubscription:
-    """Own recursive Tiled subscriptions for one named Bluesky event stream.
-
-    Completed descendants are released after their producer closes their Tiled
-    streams; the catalog root remains active for later runs.
-    """
+    """Own recursive Tiled subscriptions for selected Bluesky event streams."""
 
     def __init__(
         self,
-        catalog: Container,
-        stream_name: str,
-        data_keys: tuple[str, ...],
+        container: Container,
+        streams: Mapping[str, tuple[str, ...] | None] | None,
         callback: Callable[[BlueskyStreamUpdate], None],
         *,
         start: int | None,
@@ -125,30 +100,31 @@ class BlueskyStreamSubscription:
         """
         Create and start a managed stream subscription.
 
+        Use :func:`subscribe_to_streams` for the public input boundary.
+
         Parameters
         ----------
-        catalog : tiled.client.container.Container
+        container : tiled.client.container.Container
             Direct parent of the ``BlueskyRun`` nodes created by the associated
             :class:`~bluesky_tiled_plugins.TiledWriter`.
-        stream_name : str
-            Name of the Bluesky event stream to observe, such as ``"primary"``
-            or ``"baseline"``.
-        data_keys : tuple of str
-            Normalized, non-empty data-key selection. Use
-            :func:`subscribe_to_stream` for the public input boundary.
+        streams : Mapping[str, tuple of str or None] or None
+            Mapping from Bluesky event-stream name to its data-key selection.
+            A mapping value of ``None`` selects every streamable array and table key
+            in that stream. An outer ``None`` selects every event stream and all its
+            streamable array and table keys. Ragged and bytes nodes are ignored.
         callback : Callable[[BlueskyStreamUpdate], None]
-            Function called with each selected physical update. Tiled executes
-            callbacks asynchronously; exceptions raised by this function are not
-            caught by this manager.
+            Function called with each selected Tiled live update. Tiled
+            executes callbacks asynchronously; exceptions raised by this function
+            are not caught by this manager.
         start : int or None
-            Tiled sequence number supplied to every owned subscription. ``0``
-            replays retained streaming-cache records; ``None`` receives only new
-            records.
+            Tiled sequence number supplied to every owned subscription. The default,
+            ``0``, replays records retained by the streaming cache. ``None`` receives
+            only new records.
         max_size : int
-            Maximum incoming WebSocket message size in bytes.
+            Maximum incoming WebSocket message size in bytes. Defaults to
+            ``1_000_000``.
         run_filter : Callable[[LiveChildCreated], bool] or None
-            Optional raw Tiled run predicate. Use
-            :func:`subscribe_to_stream_filtered` for the public input boundary.
+            Optional raw Tiled run predicate.
 
         Raises
         ------
@@ -158,14 +134,12 @@ class BlueskyStreamSubscription:
 
         Notes
         -----
-        This constructor starts and connects the root catalog subscription before
-        returning. Future run descendants cannot exist until their writer creates
-        them. Producer-closed descendant streams are released after their native
-        callbacks drain. Prefer :func:`subscribe_to_stream`, which normalizes
-        public key input and rejects an empty selection.
+        This constructor starts and connects the root container subscription
+        before returning. Future run descendants cannot exist until their writer
+        creates them. Producer-closed descendant streams are released after their
+        native callbacks drain.
         """
-        self._stream_name = stream_name
-        self._data_keys = data_keys
+        self._streams = None if streams is None else dict(streams)
         self._callback = callback
         self._run_filter = run_filter
         self._start = start
@@ -182,7 +156,7 @@ class BlueskyStreamSubscription:
 
         established = False
         try:
-            self._subscribe_container(catalog, self._handle_catalog_child)
+            self._subscribe_container(container, self._handle_container_child)
             established = True
         finally:
             if not established:
@@ -210,7 +184,7 @@ class BlueskyStreamSubscription:
         Disconnect every owned Tiled subscription.
 
         Owned data-node subscriptions are disconnected before stream, run, and
-        catalog subscriptions. This method is idempotent and blocks while Tiled
+        container subscriptions. This method is idempotent and blocks while Tiled
         closes sockets and waits for its subscription threads.
 
         Raises
@@ -219,13 +193,6 @@ class BlueskyStreamSubscription:
             The first error raised while disconnecting an owned Tiled
             subscription, after teardown is attempted for every owned
             subscription.
-
-        Notes
-        -----
-        Normal Tiled stream closure releases completed descendants after their
-        callbacks drain. Producers that leave streams open retain their descendants
-        until this global teardown operation; call it from subscription-owner code,
-        not from a callback delivered by this manager.
         """
         with self._lock:
             if self._closed:
@@ -273,11 +240,11 @@ class BlueskyStreamSubscription:
         self,
         node: _Subscribable,
         run_uid: str,
+        stream_name: str,
         data_keys: tuple[str, ...],
-        start_document: Mapping[str, Any],
     ) -> None:
         callback = functools.partial(
-            self._handle_data_update, run_uid, data_keys, start_document
+            self._handle_data_update, run_uid, stream_name, data_keys
         )
 
         def attach(subscription: Subscription) -> None:
@@ -336,7 +303,7 @@ class BlueskyStreamSubscription:
             self._subscriptions.pop(uri)
             self._ordered_subscription_uris.remove(uri)
 
-    def _handle_catalog_child(self, update: LiveChildCreated) -> None:
+    def _handle_container_child(self, update: LiveChildCreated) -> None:
         child = update.child()
         if not isinstance(child, Container) or not _has_spec(child, "BlueskyRun"):
             return
@@ -350,49 +317,51 @@ class BlueskyStreamSubscription:
                     "Run filter failed for Tiled run %s at %s", run_uid, child.uri
                 )
                 return
-        start_document = (
-            _freeze_json(update.metadata["start"])
-            if "start" in update.metadata
-            else _EMPTY_START_DOCUMENT
-        )
-        callback = functools.partial(self._handle_run_child, run_uid, start_document)
+        callback = functools.partial(self._handle_run_child, run_uid)
         self._subscribe_child_container(child, callback)
 
     def _handle_run_child(
         self,
         run_uid: str,
-        start_document: Mapping[str, Any],
         update: LiveChildCreated,
     ) -> None:
         child = update.child()
-        if (
-            not isinstance(child, Container)
-            or not _has_spec(child, "BlueskyEventStream")
-            or child.item["id"] != self._stream_name
+        if not isinstance(child, Container) or not _has_spec(
+            child, "BlueskyEventStream"
         ):
             return
-        callback = functools.partial(self._handle_stream_child, run_uid, start_document)
+        stream_name = child.item["id"]
+        if self._streams is not None and stream_name not in self._streams:
+            return
+        callback = functools.partial(self._handle_stream_child, run_uid, stream_name)
         self._subscribe_child_container(child, callback)
 
     def _handle_stream_child(
         self,
         run_uid: str,
-        start_document: Mapping[str, Any],
+        stream_name: str,
         update: LiveChildCreated,
     ) -> None:
         child = update.child()
         item = child.item
+        selected_data_keys = (
+            None if self._streams is None else self._streams[stream_name]
+        )
         structure_family = item["attributes"]["structure_family"]
         if structure_family == "array":
             data_key = item["id"]
-            if data_key not in self._data_keys:
+            if selected_data_keys is not None and data_key not in selected_data_keys:
                 return
-            self._subscribe_child_data(child, run_uid, (data_key,), start_document)
+            self._subscribe_child_data(child, run_uid, stream_name, (data_key,))
         elif structure_family == "table":
             columns = item["attributes"]["structure"]["columns"]
-            data_keys = tuple(key for key in self._data_keys if key in columns)
+            data_keys = (
+                tuple(key for key in columns if key in update.metadata)
+                if selected_data_keys is None
+                else tuple(key for key in selected_data_keys if key in columns)
+            )
             if data_keys:
-                self._subscribe_child_data(child, run_uid, data_keys, start_document)
+                self._subscribe_child_data(child, run_uid, stream_name, data_keys)
 
     def _subscribe_child_container(
         self,
@@ -408,12 +377,12 @@ class BlueskyStreamSubscription:
         self,
         node: BaseClient,
         run_uid: str,
+        stream_name: str,
         data_keys: tuple[str, ...],
-        start_document: Mapping[str, Any],
     ) -> None:
         try:
             self._subscribe_data(
-                cast(_Subscribable, node), run_uid, data_keys, start_document
+                cast(_Subscribable, node), run_uid, stream_name, data_keys
             )
         except Exception:
             logger.exception("Failed to subscribe to Tiled node %s", node.uri)
@@ -421,8 +390,8 @@ class BlueskyStreamSubscription:
     def _handle_data_update(
         self,
         run_uid: str,
+        stream_name: str,
         data_keys: tuple[str, ...],
-        start_document: Mapping[str, Any],
         update: LiveArrayData | LiveArrayRef | LiveTableData,
     ) -> None:
         with self._lock:
@@ -431,10 +400,9 @@ class BlueskyStreamSubscription:
         self._callback(
             BlueskyStreamUpdate(
                 run_uid=run_uid,
-                stream_name=self._stream_name,
+                stream_name=stream_name,
                 data_keys=data_keys,
                 update=update,
-                start_document=start_document,
                 sequence=update.sequence,
             )
         )
@@ -444,61 +412,95 @@ def _has_spec(node: BaseClient, name: str) -> bool:
     return any(spec["name"] == name for spec in node.item["attributes"]["specs"])
 
 
-def _normalize_data_keys(data_keys: str | Iterable[str]) -> tuple[str, ...]:
+def _normalize_data_keys(
+    data_keys: str | Iterable[str] | None,
+) -> tuple[str, ...] | None:
+    if data_keys is None:
+        return None
     if isinstance(data_keys, str):
         return (data_keys,)
     return tuple(dict.fromkeys(data_keys))
 
 
-def _subscribe_to_stream(
-    catalog: Container,
-    stream_name: str,
-    data_keys: str | Iterable[str],
-    callback: Callable[[BlueskyStreamUpdate], None],
-    *,
-    start: int | None,
-    max_size: int,
+def _normalize_streams(
+    streams: Mapping[str, str | Iterable[str] | None] | None,
+) -> dict[str, tuple[str, ...] | None] | None:
+    if streams is None:
+        return None
+    if not streams:
+        raise ValueError("At least one stream must be selected.")
+
+    normalized = {}
+    for stream_name, data_keys in streams.items():
+        selected_data_keys = _normalize_data_keys(data_keys)
+        if selected_data_keys == ():
+            raise ValueError(
+                f"At least one data key must be selected for stream {stream_name!r}."
+            )
+        normalized[stream_name] = selected_data_keys
+    return normalized
+
+
+def _compose_run_filter(
+    metadata_filter: Callable[[Mapping[str, Any]], bool] | None,
+    required_specs: str | Iterable[str] | None,
     run_filter: Callable[[LiveChildCreated], bool] | None,
-) -> BlueskyStreamSubscription:
-    selected_data_keys = _normalize_data_keys(data_keys)
-    if not selected_data_keys:
-        raise ValueError("At least one data key must be selected.")
+) -> Callable[[LiveChildCreated], bool] | None:
+    if required_specs is None:
+        required = frozenset()
+    elif isinstance(required_specs, str):
+        required = frozenset((required_specs,))
+    else:
+        required = frozenset(required_specs)
 
-    return BlueskyStreamSubscription(
-        catalog,
-        stream_name,
-        selected_data_keys,
-        callback,
-        start=start,
-        max_size=max_size,
-        run_filter=run_filter,
-    )
+    if metadata_filter is None and not required and run_filter is None:
+        return None
+
+    def composed(update: LiveChildCreated) -> bool:
+        if metadata_filter is not None and not metadata_filter(
+            update.metadata.get("start", _EMPTY_START_DOCUMENT)
+        ):
+            return False
+        if required and not required <= {spec.name for spec in update.specs}:
+            return False
+        return run_filter is None or run_filter(update)
+
+    return composed
 
 
-def subscribe_to_stream(
-    catalog: Container,
-    stream_name: str,
-    data_keys: str | Iterable[str],
+def subscribe_to_streams(
+    container: Container,
     callback: Callable[[BlueskyStreamUpdate], None],
     *,
+    streams: Mapping[str, str | Iterable[str] | None] | None,
+    metadata_filter: Callable[[Mapping[str, Any]], bool] | None = None,
+    required_specs: str | Iterable[str] | None = None,
+    run_filter: Callable[[LiveChildCreated], bool] | None = None,
     start: int | None = 0,
     max_size: int = 1_000_000,
 ) -> BlueskyStreamSubscription:
     """
-    Subscribe to selected data keys in every matching live Bluesky run.
+    Subscribe to selected data keys in matching live Bluesky runs.
 
     Parameters
     ----------
-    catalog : tiled.client.container.Container
+    container : tiled.client.container.Container
         Direct parent of ``BlueskyRun`` nodes created by
         :class:`~bluesky_tiled_plugins.TiledWriter`.
-    stream_name : str
-        Bluesky event-stream name to observe.
-    data_keys : str or iterable of str
-        Data key or keys to select. Iterable input is deduplicated while
-        preserving its order.
     callback : Callable[[BlueskyStreamUpdate], None]
-        Function called for each selected physical Tiled update.
+        Function called for each selected native Tiled live update.
+    streams : Mapping[str, str or iterable of str or None] or None
+        Mapping from Bluesky event-stream name to its data-key selection.
+        A mapping value of ``None`` selects every streamable array and table key
+        in that stream. An outer ``None`` selects every event stream and all its
+        streamable array and table keys. Ragged and bytes nodes are ignored.
+    metadata_filter : Callable[[Mapping[str, Any]], bool] or None, optional
+        Predicate applied to the raw run-creation update's persisted
+        ``metadata["start"]`` mapping.
+    required_specs : str, iterable of str, or None, optional
+        One spec name or every spec name required for a run to match.
+    run_filter : Callable[[LiveChildCreated], bool] or None, optional
+        Predicate applied to the raw Tiled run-creation update.
     start : int or None, optional
         Tiled sequence number supplied to every owned subscription. The default,
         ``0``, replays records retained by the streaming cache. ``None`` receives
@@ -510,175 +512,54 @@ def subscribe_to_stream(
     Returns
     -------
     BlueskyStreamSubscription
-        A running managed subscription. Use :meth:`~BlueskyStreamSubscription.disconnect`
-        or a context manager to release it.
+        A running managed subscription. Use
+        :meth:`~BlueskyStreamSubscription.disconnect` or a context manager to
+        release it.
 
     Raises
     ------
     ValueError
-        If ``data_keys`` normalizes to an empty selection.
+        If ``streams`` is an empty mapping or any data-key selection is an
+        explicit empty iterable.
     Exception
         Any error raised while Tiled establishes the root subscription.
 
     Notes
     -----
-    The root catalog subscription is connected before this function returns.
-    Use :func:`subscribe_to_stream_filtered` or its metadata and spec
-    convenience wrappers to select a subset of runs. Co-located selected table
-    columns are delivered together in Tiled's decoded table representation.
-    Arrays and columns in separate physical tables are delivered independently;
-    this function does not join or align updates across nodes.
+    The optional filters are evaluated in ``metadata_filter``,
+    ``required_specs``, then ``run_filter`` order with short-circuiting AND
+    semantics.
+
+    The root container subscription is connected before this function returns.
+    Updates from different data nodes or event streams have no global ordering,
+    and Tiled may invoke the callback concurrently. Co-located selected table
+    columns remain one native table update; this function does not join or align
+    updates across nodes or streams.
+
+    With Tiled 0.2.18, the server can stream ragged nodes, but
+    ``RaggedClient`` has no subscription API and the client has no ragged live
+    schema or update model. ``BytesClient`` likewise has no subscription API,
+    and the server has no bytes live schema or cache emitter and rejects bytes
+    on its single-node streaming route. Both families are ignored here.
 
     Examples
     --------
     >>> def on_update(update):
-    ...     print(update.data())
+    ...     print(update.stream_name, update.data())
     ...
-    >>> subscription = subscribe_to_stream(
-    ...     catalog, "baseline", ("x", "y"), on_update
+    >>> subscription = subscribe_to_streams(
+    ...     container,
+    ...     on_update,
+    ...     streams={"baseline": ("x", "y"), "primary": None},
     ... )
     >>> subscription.disconnect()
     """
-    return _subscribe_to_stream(
-        catalog,
-        stream_name,
-        data_keys,
+    normalized_streams = _normalize_streams(streams)
+    return BlueskyStreamSubscription(
+        container,
+        normalized_streams,
         callback,
         start=start,
         max_size=max_size,
-        run_filter=None,
-    )
-
-
-def subscribe_to_stream_filtered(
-    catalog: Container,
-    stream_name: str,
-    data_keys: str | Iterable[str],
-    callback: Callable[[BlueskyStreamUpdate], None],
-    *,
-    run_filter: Callable[[LiveChildCreated], bool],
-    start: int | None = 0,
-    max_size: int = 1_000_000,
-) -> BlueskyStreamSubscription:
-    """
-    Subscribe to selected data keys in live runs accepted by ``run_filter``.
-
-    Parameters
-    ----------
-    catalog, stream_name, data_keys, callback, start, max_size
-        Match :func:`subscribe_to_stream`.
-    run_filter : Callable[[tiled.client.stream.LiveChildCreated], bool]
-        Predicate called once for each raw Tiled run-creation update after its
-        ``BlueskyRun`` spec is confirmed and before any descendant subscription
-        is opened. It may inspect the persisted metadata, specs, key, data
-        sources, and :meth:`~tiled.client.stream.LiveChildCreated.child` helper.
-
-    Returns
-    -------
-    BlueskyStreamSubscription
-        A running managed subscription.
-
-    Raises
-    ------
-    ValueError
-        If ``data_keys`` normalizes to an empty selection.
-    Exception
-        Any error raised while Tiled establishes the root subscription.
-
-    Notes
-    -----
-    A false result opens no run, stream, or data subscription. Predicate
-    exceptions are logged with the run UID and child URI, then skip that run.
-    """
-    return _subscribe_to_stream(
-        catalog,
-        stream_name,
-        data_keys,
-        callback,
-        start=start,
-        max_size=max_size,
-        run_filter=run_filter,
-    )
-
-
-def subscribe_to_stream_by_metadata(
-    catalog: Container,
-    stream_name: str,
-    data_keys: str | Iterable[str],
-    callback: Callable[[BlueskyStreamUpdate], None],
-    *,
-    metadata_filter: Callable[[Mapping[str, Any]], bool],
-    start: int | None = 0,
-    max_size: int = 1_000_000,
-) -> BlueskyStreamSubscription:
-    """
-    Subscribe to selected data keys in runs accepted by ``metadata_filter``.
-
-    Parameters
-    ----------
-    catalog, stream_name, data_keys, callback, start, max_size
-        Match :func:`subscribe_to_stream`.
-    metadata_filter : Callable[[Mapping[str, Any]], bool]
-        Predicate applied to the stored ``metadata[\"start\"]`` mapping from the
-        raw Tiled run-creation update. A missing Start document is an empty
-        immutable mapping.
-
-    Returns
-    -------
-    BlueskyStreamSubscription
-        A running managed subscription.
-    """
-    return subscribe_to_stream_filtered(
-        catalog,
-        stream_name,
-        data_keys,
-        callback,
-        run_filter=lambda update: metadata_filter(
-            update.metadata.get("start", _EMPTY_START_DOCUMENT)
-        ),
-        start=start,
-        max_size=max_size,
-    )
-
-
-def subscribe_to_stream_by_spec(
-    catalog: Container,
-    stream_name: str,
-    data_keys: str | Iterable[str],
-    callback: Callable[[BlueskyStreamUpdate], None],
-    *,
-    required_specs: str | Iterable[str],
-    start: int | None = 0,
-    max_size: int = 1_000_000,
-) -> BlueskyStreamSubscription:
-    """
-    Subscribe to selected data keys in runs with every required spec name.
-
-    Parameters
-    ----------
-    catalog, stream_name, data_keys, callback, start, max_size
-        Match :func:`subscribe_to_stream`.
-    required_specs : str or iterable of str
-        One spec name or every spec name required for a run to match. Version
-        policies can use :func:`subscribe_to_stream_filtered` and inspect the
-        raw Tiled specs directly.
-
-    Returns
-    -------
-    BlueskyStreamSubscription
-        A running managed subscription.
-    """
-    required = (
-        frozenset((required_specs,))
-        if isinstance(required_specs, str)
-        else frozenset(required_specs)
-    )
-    return subscribe_to_stream_filtered(
-        catalog,
-        stream_name,
-        data_keys,
-        callback,
-        run_filter=lambda update: required <= {spec.name for spec in update.specs},
-        start=start,
-        max_size=max_size,
+        run_filter=_compose_run_filter(metadata_filter, required_specs, run_filter),
     )
