@@ -9,4 +9,5 @@ Tutorials for installation and typical usage.
 tutorials/installation
 tutorials/saving
 tutorials/search
+tutorials/streaming
 ```

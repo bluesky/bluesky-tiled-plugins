@@ -938,6 +938,31 @@ class _RunWriter(DocumentRouter):
             access_tags=self.access_tags,
         )
 
+    def _close_stream_tree(self) -> None:
+        if self.root_node is None:
+            return
+
+        seen_uris: set[str] = set()
+        first_error: Exception | None = None
+        for node in itertools.chain(
+            self._internal_arrays.values(),
+            self._internal_tables.values(),
+            self._sres_nodes.values(),
+            self._desc_nodes.values(),
+            (self.root_node,),
+        ):
+            if node.uri in seen_uris:
+                continue
+            seen_uris.add(node.uri)
+            try:
+                node.close_stream()
+            except Exception as error:
+                if first_error is None:
+                    first_error = error
+                logger.exception("Failed to close Tiled stream %s", node.uri)
+        if first_error is not None:
+            raise first_error
+
     def stop(self, doc: RunStop):
         if self.root_node is None:
             raise RuntimeError(
@@ -987,6 +1012,7 @@ class _RunWriter(DocumentRouter):
             self.root_node.validate(
                 ignore_errors=self.ignore_errors, raise_on_error=True
             )
+        self._close_stream_tree()
 
     def descriptor(self, doc: EventDescriptor):
         desc_name = doc["name"]  # Name of the descriptor/stream
