@@ -264,6 +264,108 @@ def test_stream_datum_readable_counts(RE, client, tmp_path):
     assert stream[keys[2]].read() is not None
 
 
+def test_stacked_tiff_multiple_files_per_datum(client, tmp_path):
+    data = np.arange(2 * 3 * 5 * 7, dtype=np.uint16).reshape(2, 3, 5, 7)
+    for index, frame in enumerate(data.reshape(-1, 5, 7)):
+        tf.imwrite(tmp_path / f"{index}.tif", frame)
+
+    run_uid = uuid.uuid4().hex
+    descriptor_uid = uuid.uuid4().hex
+    resource_uid = uuid.uuid4().hex
+    documents = [
+        ("start", {"uid": run_uid, "time": 0.0}),
+        (
+            "descriptor",
+            {
+                "uid": descriptor_uid,
+                "run_start": run_uid,
+                "time": 0.0,
+                "name": "primary",
+                "data_keys": {
+                    "image": {
+                        "source": "file",
+                        "dtype": "array",
+                        "dtype_numpy": data.dtype.str,
+                        "shape": [3, 5, 7],
+                        "external": "STREAM:",
+                        "object_name": "detector",
+                    }
+                },
+                "object_keys": {"detector": ["image"]},
+                "configuration": {},
+                "hints": {},
+            },
+        ),
+        (
+            "stream_resource",
+            {
+                "uid": resource_uid,
+                "run_start": run_uid,
+                "data_key": "image",
+                "mimetype": "multipart/related;type=image/tiff",
+                "uri": f"{tmp_path.as_uri()}/",
+                "parameters": {
+                    "chunk_shape": [1, 5, 7],
+                    "template": "{:d}.tif",
+                },
+            },
+        ),
+        (
+            "stream_datum",
+            {
+                "uid": f"{resource_uid}/0",
+                "stream_resource": resource_uid,
+                "descriptor": descriptor_uid,
+                "indices": {"start": 0, "stop": 1},
+                "seq_nums": {"start": 1, "stop": 2},
+            },
+        ),
+        (
+            "stream_datum",
+            {
+                "uid": f"{resource_uid}/1",
+                "stream_resource": resource_uid,
+                "descriptor": descriptor_uid,
+                "indices": {"start": 1, "stop": 2},
+                "seq_nums": {"start": 2, "stop": 3},
+            },
+        ),
+        (
+            "stop",
+            {
+                "uid": uuid.uuid4().hex,
+                "run_start": run_uid,
+                "time": 1.0,
+                "exit_status": "success",
+                "reason": "",
+                "num_events": {"primary": 2},
+            },
+        ),
+    ]
+
+    writer = TiledWriter(client)
+    for name, document in documents:
+        writer(name=name, doc=document)
+
+    array = client[run_uid]["primary"]["image"]
+    data_source = array.data_sources()[0]
+    assert [
+        os.path.basename(urlparse(asset.data_uri).path) for asset in data_source.assets
+    ] == [f"{index}.tif" for index in range(6)]
+
+    actual = array.read()
+    assert actual.shape == (2, 3, 5, 7)
+    np.testing.assert_array_equal(actual, data)
+
+    actual = array.read(0)
+    assert actual.shape == (3, 5, 7)
+    np.testing.assert_array_equal(actual, data[0])
+
+    actual = array.read((0, 1))
+    assert actual.shape == (5, 7)
+    np.testing.assert_array_equal(actual, data[0, 1])
+
+
 def test_stream_datum_readable_with_two_detectors(RE, client, tmp_path):
     det1 = StreamDatumReadableCollectable(name="det1", root=str(tmp_path))
     det2 = StreamDatumReadableCollectable(name="det2", root=str(tmp_path))
