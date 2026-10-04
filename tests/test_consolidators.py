@@ -588,12 +588,15 @@ def test_tiff_and_jpeg_chunks(
         cons.consume_stream_datum(doc)
     assert cons.chunks == expected_chunks
 
-    # Check the number of registered files
-    assert (
-        len(cons.assets) == 5 * frames_per_datum / expected_chunks[0][0]
-        if join_method == "concat"
-        else 5
-    )
+    # Check the number of registered files. Under `concat` a datum is split into
+    # `frames_per_datum // chunk_shape[0]` files, so 5 datums register
+    # `5 * frames_per_datum // chunk_shape[0]` files.
+    # Under `stack` these rank-1 chunk shapes describe only the row axis, so each
+    # datum maps to a single file and 5 datums register 5 files.
+    if join_method == "concat":
+        assert len(cons.assets) == 5 * frames_per_datum // chunk_shape[0]
+    else:
+        assert len(cons.assets) == 5
 
 
 @pytest.mark.parametrize("chunk_shape", [(5,), (10,)])
@@ -654,6 +657,62 @@ def test_multipart_related_files_per_datum_override(
     sres3["parameters"]["files_per_datum"] = 2
     cons.update_from_stream_resource(sres3)
     assert cons.files_per_datum == 2
+
+
+@pytest.mark.parametrize("image_format", supported_image_seq_formats)
+@pytest.mark.parametrize(
+    "chunk_shape, multiplier, expected_files_per_datum",
+    [
+        # Modern ophyd-async areaDetector TIFF: a per-file chunk_shape given at the
+        # datum's own rank, (1, H, W) for a (frames, H, W) datum. A multi-page
+        # chunk_shape[0] > 1 packs several frames per file.
+        ((1, 10, 15), None, 6),
+        ((2, 10, 15), None, 3),
+        ((3, 10, 15), None, 2),
+        # Legacy file-per-frame detector: a rank-1 chunk_shape plus a `multiplier`
+        # (a.k.a. frame_per_point) that expands the datum and signals one file per
+        # frame.
+        ((1,), 6, 6),
+    ],
+)
+def test_multipart_related_stack_default_registers_all_files(
+    descriptor,
+    image_seq_stream_resource_factory,
+    stream_datum_factory,
+    image_format,
+    chunk_shape,
+    multiplier,
+    expected_files_per_datum,
+):
+    """Under the default join_method ('stack') a multi-frame image sequence must
+    register every file, not just one per datum.
+
+    Covers both producers of a 6-frame-per-point datum: ophyd-async areaDetector
+    TIFF (a per-file `chunk_shape` at the datum's own rank) and the legacy
+    file-per-frame detector (a rank-1 `chunk_shape` plus a `multiplier`). In both
+    cases neither `join_method` nor `files_per_datum` is set.
+    """
+    sres = image_seq_stream_resource_factory(
+        image_format=image_format,
+        data_key="test_6_imgs",  # datum shape (6, 10, 15): 6 frames of (10, 15)
+        chunk_shape=chunk_shape,
+        # NB: no join_method (defaults to 'stack') and no files_per_datum override
+    )
+    if multiplier is not None:
+        sres["parameters"]["multiplier"] = multiplier
+
+    cons = consolidator_factory(sres, descriptor)
+    assert cons.join_method == "stack"
+    if multiplier is not None:
+        assert cons.metadata["frame_per_point"] == multiplier
+    assert cons.files_per_datum == expected_files_per_datum
+
+    # Two datums (indices 0..1), each backed by `files_per_datum` files, matching
+    # the declared stacked shape (2, 6, 10, 15).
+    cons.consume_stream_datum(stream_datum_factory("test_6_imgs", 0, 0, 1))
+    cons.consume_stream_datum(stream_datum_factory("test_6_imgs", 1, 1, 2))
+    assert len(cons.assets) == 2 * expected_files_per_datum
+    assert cons.shape == (2, 6, 10, 15)
 
 
 # Tuples of (filename, original_template, expected_template, formatted)

@@ -596,12 +596,32 @@ class MultipartRelatedConsolidator(ConsolidatorBase):
         Called at __init__ and again on each `update_from_stream_resource` so a
         subsequent StreamResource with a different `files_per_datum` (or implied
         by chunking) is honored.
+
+        In general a file holds `chunk_shape[0]` frames and a datum spans
+        `datum_shape[0]` frames (the leading dimension is the per-point frame
+        count), so `files_per_datum = datum_shape[0] // chunk_shape[0]`. An
+        explicit `files_per_datum` StreamResource parameter always takes precedence.
+
+        The one exception is the `stack` layout where `chunk_shape` does not
+        describe the content of a single file at the datum's own rank -- i.e. it
+        describes only the stacked/row axis, as in `chunk_shape=(1,)` or
+        `(1, *datum_shape)` -- and no `multiplier`/`frame_per_point` indicates
+        file-per-frame storage. There the whole datum lives in a single file.
         """
-        self.files_per_datum = self._sres_parameters.get("files_per_datum") or (
-            self.datum_shape[0] // self.chunk_shape[0]
-            if self.join_method == "concat"
-            else self.metadata.get("frame_per_point", 1)
-        )
+        if files_per_datum := self._sres_parameters.get("files_per_datum"):
+            self.files_per_datum = files_per_datum
+        elif not self.datum_shape:
+            # A scalar datum (e.g. under `stack`) is backed by a single file.
+            self.files_per_datum = 1
+        elif (
+            self.join_method == "stack"
+            and len(self.chunk_shape) != len(self.datum_shape)
+            and not self.metadata.get("frame_per_point")
+        ):
+            # chunk_shape describes only the row axis: the whole datum is one file.
+            self.files_per_datum = 1
+        else:
+            self.files_per_datum = max(self.datum_shape[0] // self.chunk_shape[0], 1)
 
     def get_datum_uri(self, indx: int):
         """Return a full uri for a datum (an individual image file) based on its index in the sequence.
