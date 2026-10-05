@@ -264,10 +264,21 @@ def test_stream_datum_readable_counts(RE, client, tmp_path):
     assert stream[keys[2]].read() is not None
 
 
-def test_stacked_tiff_multiple_files_per_datum(client, tmp_path):
-    data = np.arange(2 * 3 * 5 * 7, dtype=np.uint16).reshape(2, 3, 5, 7)
-    for index, frame in enumerate(data.reshape(-1, 5, 7)):
-        tf.imwrite(tmp_path / f"{index}.tif", frame)
+@pytest.mark.parametrize(
+    ("frames_per_event", "frames_per_file"),
+    [(3, 1), (6, 2)],
+    ids=["single-frame-files", "multi-frame-files"],
+)
+def test_stacked_tiff_multiple_files_per_datum(
+    client, tmp_path, frames_per_event, frames_per_file
+):
+    data = np.arange(2 * frames_per_event * 5 * 7, dtype=np.uint16).reshape(
+        2, frames_per_event, 5, 7
+    )
+    files = data.reshape(-1, frames_per_file, 5, 7)
+    for index, frames in enumerate(files):
+        image = frames[0] if frames_per_file == 1 else frames
+        tf.imwrite(tmp_path / f"{index}.tif", image, photometric="minisblack")
 
     run_uid = uuid.uuid4().hex
     descriptor_uid = uuid.uuid4().hex
@@ -286,7 +297,7 @@ def test_stacked_tiff_multiple_files_per_datum(client, tmp_path):
                         "source": "file",
                         "dtype": "array",
                         "dtype_numpy": data.dtype.str,
-                        "shape": [3, 5, 7],
+                        "shape": [frames_per_event, 5, 7],
                         "external": "STREAM:",
                         "object_name": "detector",
                     }
@@ -305,7 +316,7 @@ def test_stacked_tiff_multiple_files_per_datum(client, tmp_path):
                 "mimetype": "multipart/related;type=image/tiff",
                 "uri": f"{tmp_path.as_uri()}/",
                 "parameters": {
-                    "chunk_shape": [1, 5, 7],
+                    "chunk_shape": [frames_per_file, 5, 7],
                     "template": "{:d}.tif",
                 },
             },
@@ -351,14 +362,14 @@ def test_stacked_tiff_multiple_files_per_datum(client, tmp_path):
     data_source = array.data_sources()[0]
     assert [
         os.path.basename(urlparse(asset.data_uri).path) for asset in data_source.assets
-    ] == [f"{index}.tif" for index in range(6)]
+    ] == [f"{index}.tif" for index in range(len(files))]
 
     actual = array.read()
-    assert actual.shape == (2, 3, 5, 7)
+    assert actual.shape == (2, frames_per_event, 5, 7)
     np.testing.assert_array_equal(actual, data)
 
     actual = array.read(0)
-    assert actual.shape == (3, 5, 7)
+    assert actual.shape == (frames_per_event, 5, 7)
     np.testing.assert_array_equal(actual, data[0])
 
     actual = array.read((0, 1))

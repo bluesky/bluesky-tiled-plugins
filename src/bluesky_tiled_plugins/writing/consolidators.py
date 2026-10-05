@@ -591,21 +591,26 @@ class MultipartRelatedConsolidator(ConsolidatorBase):
             self._sres_parameters["template"], self._sres_parameters.get("filename", "")
         )
 
-    def _is_stacked_single_frame_sequence(self) -> bool:
-        """Return whether each stacked datum spans single-frame files."""
-        return (
+    def _stacked_frames_per_file(self) -> int | None:
+        """Return the frame count for a compatible stacked file layout."""
+        if (
             self.join_method == "stack"
             and len(self.datum_shape) > 1
             and self.datum_shape[0] > 1
-            and tuple(self.chunk_shape) == (1, *self.datum_shape[1:])
-        )
+            and len(self.chunk_shape) == len(self.datum_shape)
+            and tuple(self.chunk_shape[1:]) == self.datum_shape[1:]
+            and self.datum_shape[0] % self.chunk_shape[0] == 0
+        ):
+            return self.chunk_shape[0]
+        return None
 
     def _recompute_files_per_datum(self):
         """Refresh cached files_per_datum from current parameters and shape.
 
         Explicit values take precedence, followed by concat chunking and legacy
-        frame counts. A stacked sequence of single-frame files uses the leading
-        datum dimension; other stacked layouts use one file per datum.
+        frame counts. A compatible stacked file layout uses the ratio between
+        the leading datum and file dimensions; other stacked layouts use one
+        file per datum.
         """
         files_per_datum = self._sres_parameters.get("files_per_datum")
         if files_per_datum:
@@ -614,8 +619,8 @@ class MultipartRelatedConsolidator(ConsolidatorBase):
             self.files_per_datum = self.datum_shape[0] // self.chunk_shape[0]
         elif frame_per_point := self.metadata.get("frame_per_point"):
             self.files_per_datum = frame_per_point
-        elif self._is_stacked_single_frame_sequence():
-            self.files_per_datum = self.datum_shape[0]
+        elif frames_per_file := self._stacked_frames_per_file():
+            self.files_per_datum = self.datum_shape[0] // frames_per_file
         else:
             self.files_per_datum = 1
 
@@ -649,9 +654,9 @@ class MultipartRelatedConsolidator(ConsolidatorBase):
 
         Concatenated data may span multiple files according to the ratio between
         the leading datum and chunk dimensions. Stacked full-datum files map
-        one-to-one to datums. A stacked datum whose chunk shape describes one
-        inner frame instead maps each leading-dimension frame to a separate file;
-        ``orig_chunks`` records that flat physical layout for Tiled to reshape.
+        one-to-one to datums. A compatible stacked file layout instead maps
+        groups of leading-dimension frames to separate files; ``orig_chunks``
+        records the physical file and in-file frame axes for Tiled to reshape.
         """
 
         first_file_indx = doc["indices"]["start"] * self.files_per_datum
@@ -665,14 +670,15 @@ class MultipartRelatedConsolidator(ConsolidatorBase):
             )
             self.assets.append(new_asset)
 
+        frames_per_file = self._stacked_frames_per_file()
         if (
-            self._is_stacked_single_frame_sequence()
-            and self.files_per_datum == self.datum_shape[0]
+            frames_per_file is not None
+            and self.files_per_datum == self.datum_shape[0] // frames_per_file
         ):
-            self.orig_chunks = (
-                (1,) * len(self.assets),
-                *((dimension,) for dimension in self.datum_shape[1:]),
-            )
+            file_chunks = tuple((dimension,) for dimension in self.datum_shape[1:])
+            if frames_per_file > 1:
+                file_chunks = ((frames_per_file,), *file_chunks)
+            self.orig_chunks = ((1,) * len(self.assets), *file_chunks)
 
         return super().consume_stream_datum(doc)
 
