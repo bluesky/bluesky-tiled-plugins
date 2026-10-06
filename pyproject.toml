@@ -38,7 +38,7 @@ dependencies = [
   "event-model",
   "mongoquery",
   "pytz",
-  "tiled[client] >=0.2.15",
+  "tiled[minimal-client] >=0.2.15",
   "tzlocal",
 ]
 
