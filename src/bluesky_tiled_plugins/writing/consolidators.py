@@ -584,45 +584,67 @@ class MultipartRelatedConsolidator(ConsolidatorBase):
             )
             self.chunk_shape = (self.datum_shape[0],)
 
-        self._recompute_files_per_datum()
+        self._derive_files_per_datum()
 
         # Compile and set the filename template
         self.template = compile_template(
             self._sres_parameters["template"], self._sres_parameters.get("filename", "")
         )
 
-    def _stacked_frames_per_file(self) -> int | None:
-        """Return the frame count for a compatible stacked file layout."""
+    def _derive_frames_per_file(self) -> int:
+        """Number of frames stored in each file backing this data key.
+
+        A single Bluesky sequence number (one Datum index / Event) holds
+        `datum_shape[0]` frames -- the per-point frame count exposed by
+        areaDetector as NumImages (a.k.a. `frame_per_point`, `multiplier`). The
+        IOC always writes a flat sequence of frames; how many land in one file
+        depends on the format:
+
+          - `concat`: `chunk_shape[0]` frames per file (datums are concatenated
+            along the leading axis, so the ratio of the leading datum and chunk
+            dimensions gives the file count).
+          - legacy `frame_per_point`: the classic areaDetector file-per-frame
+            layout (one TIFF/JPEG per frame).
+          - stacked with a frame-rank `chunk_shape` (e.g. `(k, *frame_shape)`):
+            `chunk_shape[0]` frames per file, covering single- and multi-page files.
+          - otherwise the whole datum lives in one file.
+
+        `files_per_datum` is then simply `datum_shape[0] // frames_per_file`.
+        Conversely, an explicit `files_per_datum` parameter is authoritative, so we
+        back-derive `frames_per_file` from it to keep the invariant
+        `files_per_datum * frames_per_file == datum_shape[0]`.
+        """
+        if not self.datum_shape:
+            return 1
+        if files_per_datum := self._sres_parameters.get("files_per_datum"):
+            return max(self.datum_shape[0] // files_per_datum, 1)
+        if self.join_method == "concat":
+            return self.chunk_shape[0]
+        if self.metadata.get("frame_per_point"):
+            return 1
         if (
-            self.join_method == "stack"
-            and len(self.datum_shape) > 1
-            and self.datum_shape[0] > 1
-            and len(self.chunk_shape) == len(self.datum_shape)
+            len(self.chunk_shape) == len(self.datum_shape)
             and tuple(self.chunk_shape[1:]) == self.datum_shape[1:]
             and self.datum_shape[0] % self.chunk_shape[0] == 0
         ):
             return self.chunk_shape[0]
-        return None
+        return self.datum_shape[0]
 
-    def _recompute_files_per_datum(self):
-        """Refresh cached files_per_datum from current parameters and shape.
+    def _derive_files_per_datum(self):
+        """Compute or update files_per_datum from current StreamResource parameters.
 
-        Explicit values take precedence, followed by concat chunking and legacy
-        frame counts. A compatible stacked file layout uses the ratio between
-        the leading datum and file dimensions; other stacked layouts use one
-        file per datum.
+        Called at __init__ and again on each `update_from_stream_resource`. If set,
+        an explicit `files_per_datum` parameter takes precedence; otherwise a datum spanning
+        `datum_shape[0]` frames is split into files holding `_frames_per_file()` frames each.
         """
-        files_per_datum = self._sres_parameters.get("files_per_datum")
-        if files_per_datum:
+        if files_per_datum := self._sres_parameters.get("files_per_datum"):
             self.files_per_datum = files_per_datum
-        elif self.join_method == "concat":
-            self.files_per_datum = self.datum_shape[0] // self.chunk_shape[0]
-        elif frame_per_point := self.metadata.get("frame_per_point"):
-            self.files_per_datum = frame_per_point
-        elif frames_per_file := self._stacked_frames_per_file():
-            self.files_per_datum = self.datum_shape[0] // frames_per_file
-        else:
+        elif not self.datum_shape:
             self.files_per_datum = 1
+        else:
+            self.files_per_datum = max(
+                self.datum_shape[0] // self._derive_frames_per_file(), 1
+            )
 
     def get_datum_uri(self, indx: int):
         """Return a full uri for a datum (an individual image file) based on its index in the sequence.
@@ -652,11 +674,11 @@ class MultipartRelatedConsolidator(ConsolidatorBase):
     def consume_stream_datum(self, doc: StreamDatum):
         """Register files for the datum range and update physical chunks.
 
-        Concatenated data may span multiple files according to the ratio between
-        the leading datum and chunk dimensions. Stacked full-datum files map
-        one-to-one to datums. A compatible stacked file layout instead maps
-        groups of leading-dimension frames to separate files; ``orig_chunks``
-        records the physical file and in-file frame axes for Tiled to reshape.
+        A datum maps to `files_per_datum` files. When a stacked datum spans more
+        than one file, the physical layout (flat files, each holding
+        `_frames_per_file()` frames) differs from the logical array, so it is
+        recorded in `orig_chunks` for Tiled to map each file to the correct slice
+        -- this is what makes sub-array reads work.
         """
 
         first_file_indx = doc["indices"]["start"] * self.files_per_datum
@@ -670,11 +692,13 @@ class MultipartRelatedConsolidator(ConsolidatorBase):
             )
             self.assets.append(new_asset)
 
-        frames_per_file = self._stacked_frames_per_file()
         if (
-            frames_per_file is not None
-            and self.files_per_datum == self.datum_shape[0] // frames_per_file
+            self.join_method == "stack"
+            and len(self.datum_shape) > 1
+            and self.files_per_datum > 1
+            and self.datum_shape[0] % self.files_per_datum == 0
         ):
+            frames_per_file = self._derive_frames_per_file()
             file_chunks = tuple((dimension,) for dimension in self.datum_shape[1:])
             if frames_per_file > 1:
                 file_chunks = ((frames_per_file,), *file_chunks)
@@ -689,7 +713,7 @@ class MultipartRelatedConsolidator(ConsolidatorBase):
         self.template = compile_template(
             self._sres_parameters["template"], self._sres_parameters.get("filename", "")
         )
-        self._recompute_files_per_datum()
+        self._derive_files_per_datum()
         # Increment the offset to reset the file index counter to start from "0" for the new StreamResource template
         self._indx_offset = len(self.assets)
 

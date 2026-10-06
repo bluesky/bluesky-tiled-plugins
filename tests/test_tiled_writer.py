@@ -265,12 +265,16 @@ def test_stream_datum_readable_counts(RE, client, tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("frames_per_event", "frames_per_file"),
-    [(3, 1), (6, 2)],
-    ids=["single-frame-files", "multi-frame-files"],
+    ("frames_per_event", "frames_per_file", "descriptor_shape", "extra_params"),
+    [
+        (3, 1, [3, 5, 7], {"chunk_shape": [1, 5, 7]}),
+        (6, 2, [6, 5, 7], {"chunk_shape": [2, 5, 7]}),
+        (3, 1, [5, 7], {"chunk_shape": [1], "multiplier": 3}),
+    ],
+    ids=["single-frame-files", "multi-frame-files", "legacy-multiplier"],
 )
 def test_stacked_tiff_multiple_files_per_datum(
-    client, tmp_path, frames_per_event, frames_per_file
+    client, tmp_path, frames_per_event, frames_per_file, descriptor_shape, extra_params
 ):
     data = np.arange(2 * frames_per_event * 5 * 7, dtype=np.uint16).reshape(
         2, frames_per_event, 5, 7
@@ -297,7 +301,7 @@ def test_stacked_tiff_multiple_files_per_datum(
                         "source": "file",
                         "dtype": "array",
                         "dtype_numpy": data.dtype.str,
-                        "shape": [frames_per_event, 5, 7],
+                        "shape": descriptor_shape,
                         "external": "STREAM:",
                         "object_name": "detector",
                     }
@@ -316,8 +320,8 @@ def test_stacked_tiff_multiple_files_per_datum(
                 "mimetype": "multipart/related;type=image/tiff",
                 "uri": f"{tmp_path.as_uri()}/",
                 "parameters": {
-                    "chunk_shape": [frames_per_file, 5, 7],
                     "template": "{:d}.tif",
+                    **extra_params,
                 },
             },
         ),
