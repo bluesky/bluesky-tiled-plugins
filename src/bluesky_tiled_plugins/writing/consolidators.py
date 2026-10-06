@@ -610,9 +610,14 @@ class MultipartRelatedConsolidator(ConsolidatorBase):
           - otherwise the whole datum lives in one file.
 
         `files_per_datum` is then simply `datum_shape[0] // frames_per_file`.
+        Conversely, an explicit `files_per_datum` parameter is authoritative, so we
+        back-derive `frames_per_file` from it to keep the invariant
+        `files_per_datum * frames_per_file == datum_shape[0]`.
         """
         if not self.datum_shape:
             return 1
+        if files_per_datum := self._sres_parameters.get("files_per_datum"):
+            return max(self.datum_shape[0] // files_per_datum, 1)
         if self.join_method == "concat":
             return self.chunk_shape[0]
         if self.metadata.get("frame_per_point"):
@@ -691,6 +696,7 @@ class MultipartRelatedConsolidator(ConsolidatorBase):
             self.join_method == "stack"
             and len(self.datum_shape) > 1
             and self.files_per_datum > 1
+            and self.datum_shape[0] % self.files_per_datum == 0
         ):
             frames_per_file = self._derive_frames_per_file()
             file_chunks = tuple((dimension,) for dimension in self.datum_shape[1:])
