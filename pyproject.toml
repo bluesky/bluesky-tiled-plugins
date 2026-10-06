@@ -37,8 +37,12 @@ dependencies = [
   "dask",
   "event-model",
   "mongoquery",
+  "ndindex",  # imported by tiled.ndslice; not in tiled's xarray extra
+  "numpy",
+  "pandas",
+  "pyarrow",
   "pytz",
-  "tiled[minimal-client] >=0.2.15",
+  "tiled[minimal-client,xarray] >=0.2.15",
   "tzlocal",
 ]
 
