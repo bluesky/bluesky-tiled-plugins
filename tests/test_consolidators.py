@@ -588,12 +588,11 @@ def test_tiff_and_jpeg_chunks(
         cons.consume_stream_datum(doc)
     assert cons.chunks == expected_chunks
 
-    # Check the number of registered files
-    assert (
-        len(cons.assets) == 5 * frames_per_datum / expected_chunks[0][0]
-        if join_method == "concat"
-        else 5
-    )
+    # Check the number of registered files.
+    if join_method == "concat":
+        assert len(cons.assets) == 5 * frames_per_datum // chunk_shape[0]
+    else:
+        assert len(cons.assets) == 5
 
 
 @pytest.mark.parametrize("chunk_shape", [(5,), (10,)])
@@ -654,6 +653,76 @@ def test_multipart_related_files_per_datum_override(
     sres3["parameters"]["files_per_datum"] = 2
     cons.update_from_stream_resource(sres3)
     assert cons.files_per_datum == 2
+
+
+@pytest.mark.parametrize(
+    "chunk_shape, multiplier, expected_files_per_datum",
+    [
+        ((1, 10, 15), None, 6),
+        ((2, 10, 15), None, 3),
+        ((3, 10, 15), None, 2),
+        ((4, 10, 15), None, 1),
+        ((1, 9, 15), None, 1),
+        ((1,), 6, 6),
+    ],
+    ids=[
+        "single-frame-files",
+        "two-frame-files",
+        "three-frame-files",
+        "non-divisor",
+        "inner-shape-mismatch",
+        "legacy-multiplier",
+    ],
+)
+def test_multipart_related_stack_files_per_datum(
+    descriptor,
+    image_seq_stream_resource_factory,
+    stream_datum_factory,
+    chunk_shape,
+    multiplier,
+    expected_files_per_datum,
+):
+    stream_resource = image_seq_stream_resource_factory(
+        image_format="tiff",
+        data_key="test_6_imgs",
+        chunk_shape=chunk_shape,
+    )
+    if multiplier is not None:
+        stream_resource["parameters"]["multiplier"] = multiplier
+
+    consolidator = consolidator_factory(stream_resource, descriptor)
+    assert consolidator.files_per_datum == expected_files_per_datum
+
+    consolidator.consume_stream_datum(stream_datum_factory("test_6_imgs", 0, 0, 2))
+    assert len(consolidator.assets) == 2 * expected_files_per_datum
+    assert consolidator.shape == (2, 6, 10, 15)
+
+
+def test_multipart_related_stack_explicit_files_per_datum(
+    descriptor, image_seq_stream_resource_factory, stream_datum_factory
+):
+    """An explicit `files_per_datum` is authoritative under `stack`: `frames_per_file`
+    (and thus `orig_chunks`) is back-derived from it so the invariant
+    `files_per_datum * frames_per_file == datum_shape[0]` holds even when it disagrees
+    with `chunk_shape[0]`.
+    """
+    stream_resource = image_seq_stream_resource_factory(
+        image_format="tiff",
+        data_key="test_6_imgs",  # datum shape (6, 10, 15)
+        chunk_shape=(1, 10, 15),  # would imply 6 files/datum if inferred
+    )
+    stream_resource["parameters"]["files_per_datum"] = 2  # forced -> 3 frames/file
+
+    cons = consolidator_factory(stream_resource, descriptor)
+    assert cons.files_per_datum == 2
+    assert cons._derive_frames_per_file() == 3
+    assert cons.files_per_datum * cons._derive_frames_per_file() == cons.datum_shape[0]
+
+    cons.consume_stream_datum(stream_datum_factory("test_6_imgs", 0, 0, 1))
+    assert len(cons.assets) == 2
+    # Two files, each holding 3 frames of (10, 15): physical layout (2, 3, 10, 15).
+    assert cons.orig_chunks == ((1, 1), (3,), (10,), (15,))
+    assert cons.shape == (1, 6, 10, 15)
 
 
 # Tuples of (filename, original_template, expected_template, formatted)
