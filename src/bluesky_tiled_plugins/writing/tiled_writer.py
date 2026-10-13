@@ -908,10 +908,18 @@ class _RunWriter(DocumentRouter):
                 and err.response.status_code != 429
             ):
                 raise  # A client error (4xx); retrying would not help.
+            min_seq_num, max_seq_num = pyarrow.compute.min_max(
+                table["seq_num"]
+            ).values()
+            if min_seq_num == max_seq_num:
+                msg = f"Affected 'seq_num': {min_seq_num}."
+            else:
+                msg = f"Affected 'seq_num' range: {min_seq_num} - {max_seq_num}."
             msg = (
                 f"Appending {table.num_rows} rows to the internal table of stream "
                 f"'{desc_name}' failed with {err!r}; forcing a retry. If the failed "
                 "attempt was in fact processed by the server, the rows may be duplicated."
+                f" {msg}"
             )
             logger.warning(msg)
             self.notes.append(msg)
