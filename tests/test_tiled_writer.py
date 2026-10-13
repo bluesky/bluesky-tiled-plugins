@@ -402,6 +402,34 @@ def test_dims_names(client, external_assets_folder):
     assert run["primary"]["det-key2"].structure().dims == ("time", "dim_x", "dim_y")
 
 
+def test_stack_consolidation_with_named_dimensions(client, tmp_path):
+    expected = np.arange(3 * 4096, dtype="<i8").reshape(3, 1, 4096)
+    with h5py.File(tmp_path / "dataset.h5", "w") as file:
+        file.create_group("entry").create_group("data").create_dataset(
+            "data_2", data=expected
+        )
+
+    tw = TiledWriter(client)
+    for item in render_templated_documents(
+        "external_assets_single_key.json", str(tmp_path)
+    ):
+        name, doc = item["name"], item["doc"]
+        if name == "start":
+            uid = doc["uid"]
+        elif name == "descriptor":
+            doc["data_keys"]["det-key2"]["shape"] = [1, 4096]
+            doc["data_keys"]["det-key2"]["dims"] = ["frame", "bin_count"]
+        elif name == "stream_resource":
+            doc["parameters"]["chunk_shape"] = [1, 1, 4096]
+        tw(name, doc)
+
+    stream = client[uid]["primary"]
+    assert stream["det-key2"].shape == (3, 1, 4096)
+    actual = stream.read()["det-key2"]
+    assert actual.dims == ("time", "frame", "bin_count")
+    np.testing.assert_array_equal(actual.values, expected)
+
+
 @pytest.mark.parametrize(
     "batch_size, expected_patch_shapes, expected_patch_offsets",
     [(1, (1, 1, 1), (0, 1, 2)), (2, (2, 1), (0, 2)), (5, (3,), (0,))],
@@ -492,10 +520,7 @@ def test_validate_external_data(client, external_assets_folder, error_type, vali
                 "int32"
             ).str  # should be "int64"
         elif (error_type == "dims") and (name == "descriptor"):
-            item["doc"]["data_keys"]["det-key2"]["dims"] = [
-                "dim_2",
-                "dim_3",
-            ]  # Missing time dim
+            doc["data_keys"]["det-key2"]["dims"] = ["dim_2", "dim_3", "extra"]
 
         # Check that the warning is issued when data changes during the validation
         if name == "stop" and validate:
