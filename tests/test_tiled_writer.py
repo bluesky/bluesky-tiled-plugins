@@ -830,7 +830,10 @@ def test_json_backup(client, tmpdir, monkeypatch):
     )  # The Descriptor was processed and the primary stream was created
     assert run["primary"].read() is not None  # The stream can be read
     assert len(run["primary"].read()) == 0  # No events were processed due to the error
-    assert "stop" in run.metadata  # The TiledWriter did not crash
+    # Once the primary callback has failed, it is abandoned for the rest of the
+    # run: the failed (partial) run must NOT receive a stop document, so it can
+    # not masquerade as a complete run. The full run lives in the backup.
+    assert "stop" not in run.metadata
 
     # Check that the backup file was created
     filepath = tmpdir / f"{uid[:8]}.jsonl"
