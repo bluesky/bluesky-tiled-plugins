@@ -9,7 +9,6 @@ document stream is preserved in the backup sinks for later replay.
 
 import bluesky.plans as bp
 import ophyd.sim
-import pytest
 
 from bluesky_tiled_plugins import TiledWriter
 from bluesky_tiled_plugins.writing.tiled_writer import _ConditionalBackup

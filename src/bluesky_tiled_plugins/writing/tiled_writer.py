@@ -9,6 +9,7 @@ import posixpath
 from typing import Any, Optional, cast
 import warnings
 
+import httpx
 import numpy
 import pyarrow
 from event_model import (
@@ -884,7 +885,40 @@ class _RunWriter(DocumentRouter):
                 )
                 self._internal_tables[f"{desc_name}{suffix}"] = df_client
 
+            self._append_with_retry(df_client, table, desc_name)
+
+    def _append_with_retry(self, df_client: DataFrameClient, table, desc_name: str):
+        """Append rows to the internal table, retrying on transient errors.
+
+        The Tiled client deliberately does not retry an append whose request may
+        have already been processed by the server (e.g. the response was lost to
+        a read timeout), because a retry can duplicate the appended rows. For
+        Bluesky event data we accept that trade-off rather than failing the run.
+        Such a retry is forced here, with a warning and a note recorded in the run
+        metadata so that possibly duplicated rows can be identified later.
+
+        Client errors (4xx) are not retried -- they would fail again."""
+        try:
             df_client.append_partition(0, table)
+            return
+        except (httpx.TransportError, httpx.HTTPStatusError) as err:
+            if (
+                isinstance(err, httpx.HTTPStatusError)
+                and err.response.status_code < 500
+                and err.response.status_code != 429
+            ):
+                raise  # A client error (4xx); retrying would not help.
+            msg = (
+                f"Appending {table.num_rows} rows to the internal table of stream "
+                f"'{desc_name}' failed with {err!r}; forcing a retry. If the failed "
+                "attempt was in fact processed by the server, the rows may be duplicated."
+            )
+            logger.warning(msg)
+            self.notes.append(msg)
+
+        for attempt in retry_context():
+            with attempt:
+                df_client.append_partition(0, table)
 
     def _update_consolidator(self, doc: StreamDatum):
         """Register the external data from StreamDatum in the Consolidator"""
