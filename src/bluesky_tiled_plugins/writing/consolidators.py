@@ -194,8 +194,9 @@ class ConsolidatorBase:
         self._num_rows: int = 0
         self._seqnums_to_indices_map: dict[int, int] = {}
 
-        # Set the dimension names if provided
         self.dims: tuple[str, ...] = tuple(data_desc.get("dims", ()))
+        if self.dims and self.join_method == "stack":
+            self.dims = ("time", *self.dims)
 
     @classmethod
     def get_supported_mimetype(cls, sres):

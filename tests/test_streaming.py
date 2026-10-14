@@ -909,7 +909,7 @@ def test_subscribe_to_streams_delivers_stream_datum_without_events(
                             "dtype": "array",
                             "dtype_numpy": "<i8",
                             "shape": [2],
-                            "dims": ["time", "dim_1"],
+                            "dims": ["dim_1"],
                             "external": "STREAM:",
                             "object_name": "det",
                         }
