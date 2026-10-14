@@ -90,6 +90,39 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
 
+  # Verify that the declared runtime dependencies are sufficient on their own:
+  # install the package with no extras and no dev/test dependency groups (so
+  # e.g. tiled[server] in the test group does not mask a missing runtime
+  # dependency) and smoke test it. See tests/minimal_smoke.py.
+  minimal-install:
+    name: Minimal install / Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    needs: [pre-commit]
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          allow-prereleases: true
+
+      - uses: astral-sh/setup-uv@v7
+
+      - name: Install package without extras or dependency groups
+        run: |
+          uv venv --python ${{ matrix.python-version }}
+          uv pip install .
+
+      - name: Smoke test the minimal installation
+        run: .venv/bin/python tests/minimal_smoke.py
+
   # Windows and macOS jobs run without Mongo/Redis. Tests gated on
   # TEST_MONGO_URI / TEST_REDIS_URI skip themselves automatically.
   other-checks:
