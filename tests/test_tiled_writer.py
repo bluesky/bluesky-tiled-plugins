@@ -411,7 +411,7 @@ def test_stack_consolidation_with_named_dimensions(client, tmp_path):
 
     tw = TiledWriter(client)
     for item in render_templated_documents(
-        "external_assets_single_key.json", str(tmp_path)
+        "external_assets_single_key.json", tmp_path.as_posix()
     ):
         name, doc = item["name"], item["doc"]
         if name == "start":
