@@ -93,7 +93,7 @@ jobs:
   # Verify that the declared runtime dependencies are sufficient on their own:
   # install the package with no extras and no dev/test dependency groups (so
   # e.g. tiled[server] in the test group does not mask a missing runtime
-  # dependency) and smoke test it. See tests/minimal_smoke.py.
+  # dependency) and smoke test it. See .github/scripts/minimal_smoke.py.
   minimal-install:
     name: Minimal install / Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
@@ -121,7 +121,7 @@ jobs:
           uv pip install .
 
       - name: Smoke test the minimal installation
-        run: .venv/bin/python tests/minimal_smoke.py
+        run: .venv/bin/python .github/scripts/minimal_smoke.py
 
   # Windows and macOS jobs run without Mongo/Redis. Tests gated on
   # TEST_MONGO_URI / TEST_REDIS_URI skip themselves automatically.

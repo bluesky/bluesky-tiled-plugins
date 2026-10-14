@@ -4,7 +4,7 @@ Run with plain python (not pytest) in an environment where only the package and
 its declared runtime dependencies are installed -- no extras, no dev/test
 dependency groups:
 
-    uv venv && uv pip install . && .venv/bin/python tests/minimal_smoke.py
+    uv venv && uv pip install . && .venv/bin/python .github/scripts/minimal_smoke.py
 
 It verifies that the declared runtime dependencies are sufficient: every
 submodule imports, the client-side writing machinery works, and the optional
@@ -93,7 +93,11 @@ consolidator = consolidator_factory(
         "mimetype": "multipart/related;type=image/tiff",
         "parameters": {"chunk_shape": (1, 5, 7), "template": "f_{:06d}.tiff"},
     },
-    {"data_keys": {"img": {"shape": [3, 5, 7], "dtype": "array", "dtype_numpy": "|u1"}}},
+    {
+        "data_keys": {
+            "img": {"shape": [3, 5, 7], "dtype": "array", "dtype_numpy": "|u1"}
+        }
+    },
 )
 consolidator.consume_stream_datum(
     {"indices": {"start": 0, "stop": 1}, "seq_nums": {"start": 1, "stop": 2}}
