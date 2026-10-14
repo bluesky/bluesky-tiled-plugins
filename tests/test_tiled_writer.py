@@ -1,10 +1,12 @@
 import json
+import logging
 import os
 import uuid
 from collections.abc import Iterator
 from typing import cast
 from urllib.parse import parse_qs, urlparse
 
+import httpx
 
 from bluesky import RunEngine
 import bluesky.plan_stubs as bps
@@ -947,7 +949,10 @@ def test_json_backup(client, tmpdir, monkeypatch):
     )  # The Descriptor was processed and the primary stream was created
     assert run["primary"].read() is not None  # The stream can be read
     assert len(run["primary"].read()) == 0  # No events were processed due to the error
-    assert "stop" in run.metadata  # The TiledWriter did not crash
+    # Once the primary callback has failed, it is abandoned for the rest of the
+    # run: the failed (partial) run must NOT receive a stop document, so it can
+    # not masquerade as a complete run. The full run lives in the backup.
+    assert "stop" not in run.metadata
 
     # Check that the backup file was created
     filepath = tmpdir / f"{uid[:8]}.jsonl"
@@ -959,6 +964,57 @@ def test_json_backup(client, tmpdir, monkeypatch):
     assert lines[1]["name"] == "descriptor"
     assert lines[2]["name"].startswith("event")
     assert lines[6]["name"] == "stop"
+
+
+class _LoseAppendResponseOnce(httpx.BaseTransport):
+    """Forward the first PATCH /table/partition request to the wrapped transport
+    -- so the server fully processes the append -- but raise ReadTimeout to the
+    caller, simulating a lost response for an append that actually succeeded."""
+
+    def __init__(self, wrapped):
+        self._wrapped = wrapped
+        self.tripped = False
+
+    def handle_request(self, request):
+        response = self._wrapped.handle_request(request)
+        if (
+            not self.tripped
+            and request.method == "PATCH"
+            and "/table/partition/" in str(request.url)
+        ):
+            self.tripped = True
+            raise httpx.ReadTimeout("Simulated lost response", request=request)
+        return response
+
+
+def test_event_append_retried_with_possible_duplication(
+    RE, client, monkeypatch, caplog
+):
+    """A failed internal-table append (e.g. a lost response) must not kill the
+    scan: TiledWriter warns, records a note in the run metadata, and forces a
+    retry -- accepting possibly duplicated rows (at-least-once semantics for
+    event data; the Tiled client itself deliberately does not retry appends
+    whose request may have been processed)."""
+    transport = _LoseAppendResponseOnce(client.context.http_client._transport)
+    monkeypatch.setattr(client.context.http_client, "_transport", transport)
+
+    tw = TiledWriter(client)
+    with caplog.at_level(logging.WARNING):
+        RE(bp.count([ophyd.sim.det], 3), tw)
+
+    assert transport.tripped
+    run = client.values().last()
+    assert "stop" in run.metadata  # The run completed normally
+
+    # The first (lost-response) append landed server-side and the forced retry
+    # appended the same batch again: rows are duplicated, none are lost.
+    internal_table = run["primary"].base["internal"].read()
+    assert sorted(internal_table["seq_num"]) == [1, 1, 2, 2, 3, 3]
+
+    # The possible duplication is discoverable: a warning was logged and a note
+    # was recorded in the run metadata.
+    assert any("forcing a retry" in record.getMessage() for record in caplog.records)
+    assert any("may be duplicated" in note for note in run.metadata.get("notes", []))
 
 
 @pytest.mark.parametrize(

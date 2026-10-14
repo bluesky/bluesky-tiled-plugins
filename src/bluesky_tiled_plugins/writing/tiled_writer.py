@@ -9,6 +9,7 @@ import posixpath
 from typing import Any, Optional, cast
 import warnings
 
+import httpx
 import numpy
 import pyarrow
 from event_model import (
@@ -162,11 +163,16 @@ ExternalEventDataReference = namedtuple(
 class _ConditionalBackup:
     """Callback to save Bluesky data if the primary callback fails.
 
-    Callback that tries to call the primary callback and,
-    if it fails, flushes the buffer to backup callbacks.
+    Callback that tries to call the primary callback and, if it fails, flushes
+    the buffer to backup callbacks.
 
-    Once an error has been encountererd in the primary callback,
-    all subsequent documents would be sent to the backup callbacks as well.
+    Once an error has been encountered in the primary callback, the primary
+    callback is *abandoned* for the remainder of the run: all documents
+    (including the buffered ones already seen) are sent to the backup callbacks
+    only. This guarantees that a failed run never receives further writes --
+    in particular the Stop document -- from the primary, so a partially
+    written run can not masquerade as a complete one; the full document
+    stream is preserved in the backups for later replay.
 
     This callback is intended to be used with a `RunRouter` and process
     documents from a single Bluesky run.
@@ -181,30 +187,32 @@ class _ConditionalBackup:
         self.primary_callback = primary_callback
         self.backup_callbacks = backup_callbacks
         self._buffer: deque[tuple[str, DocumentType]] = deque(maxlen=maxlen)
-        self._push_to_backup = False
+        self._primary_failed = False
 
     def __call__(self, name: str, doc: DocumentType):
         self._buffer.append((name, doc))
 
-        try:
-            self.primary_callback(name, doc)
-        except Exception as e:
-            logger.warning(
-                f"Primary callback {type(self.primary_callback).__name__} failed: {e}. "
-                "Flushing buffer to backup callbacks.",
-                stacklevel=2,
-            )
-            self._push_to_backup = True
+        if not self._primary_failed:
+            try:
+                self.primary_callback(name, doc)
+            except Exception:
+                logger.exception(
+                    f"Primary callback {type(self.primary_callback).__name__} failed "
+                    f"while processing a {name!r} document. No further documents from "
+                    "this run will be sent to the primary callback; the full run is "
+                    "routed to the backup callbacks instead."
+                )
+                self._primary_failed = True
 
-        if self._push_to_backup:
-            for name, doc in self._buffer:
+        if self._primary_failed:
+            for buffered_name, buffered_doc in self._buffer:
                 for bcb in self.backup_callbacks:
                     try:
-                        bcb(name, doc)
-                    except Exception as e:
-                        logger.warning(
-                            f"Backup callback {bcb.__class__.__name__} failed with error: {e}",
-                            stacklevel=2,
+                        bcb(buffered_name, buffered_doc)
+                    except Exception:
+                        logger.exception(
+                            f"Backup callback {bcb.__class__.__name__} failed "
+                            f"while processing a {buffered_name!r} document."
                         )
             self._buffer.clear()
 
@@ -877,7 +885,48 @@ class _RunWriter(DocumentRouter):
                 )
                 self._internal_tables[f"{desc_name}{suffix}"] = df_client
 
+            self._append_with_retry(df_client, table, desc_name)
+
+    def _append_with_retry(self, df_client: DataFrameClient, table, desc_name: str):
+        """Append rows to the internal table, retrying on transient errors.
+
+        The Tiled client deliberately does not retry an append whose request may
+        have already been processed by the server (e.g. the response was lost to
+        a read timeout), because a retry can duplicate the appended rows. For
+        Bluesky event data we accept that trade-off rather than failing the run.
+        Such a retry is forced here, with a warning and a note recorded in the run
+        metadata so that possibly duplicated rows can be identified later.
+
+        Client errors (4xx) are not retried -- they would fail again."""
+        try:
             df_client.append_partition(0, table)
+            return
+        except (httpx.TransportError, httpx.HTTPStatusError) as err:
+            if (
+                isinstance(err, httpx.HTTPStatusError)
+                and err.response.status_code < 500
+                and err.response.status_code != 429
+            ):
+                raise  # A client error (4xx); retrying would not help.
+            min_seq_num, max_seq_num = pyarrow.compute.min_max(
+                table["seq_num"]
+            ).values()
+            if min_seq_num == max_seq_num:
+                msg = f"Affected 'seq_num': {min_seq_num}."
+            else:
+                msg = f"Affected 'seq_num' range: {min_seq_num} - {max_seq_num}."
+            msg = (
+                f"Appending {table.num_rows} rows to the internal table of stream "
+                f"'{desc_name}' failed with {err!r}; forcing a retry. If the failed "
+                "attempt was in fact processed by the server, the rows may be duplicated."
+                f" {msg}"
+            )
+            logger.warning(msg)
+            self.notes.append(msg)
+
+        for attempt in retry_context():
+            with attempt:
+                df_client.append_partition(0, table)
 
     def _update_consolidator(self, doc: StreamDatum):
         """Register the external data from StreamDatum in the Consolidator"""
@@ -904,17 +953,18 @@ class _RunWriter(DocumentRouter):
 
         for attempt in retry_context():
             with attempt:
-                response = node.context.http_client.put(
-                    node.uri.replace("/metadata/", "/data_source/", 1),
-                    content=safe_json_dump({"data_source": data_source}),
-                    params={
-                        "patch_shape": ",".join(map(str, patch.shape)),
-                        "patch_offset": ",".join(map(str, patch.offset)),
-                    }
-                    if patch
-                    else None,
+                handle_error(
+                    node.context.http_client.put(
+                        node.uri.replace("/metadata/", "/data_source/", 1),
+                        content=safe_json_dump({"data_source": data_source}),
+                        params={
+                            "patch_shape": ",".join(map(str, patch.shape)),
+                            "patch_offset": ",".join(map(str, patch.offset)),
+                        }
+                        if patch
+                        else None,
+                    )
                 )
-        handle_error(response)
 
     def _write_external_data(self, doc: StreamDatum):
         """Register (or update) the external data from StreamDatum in Tiled"""
