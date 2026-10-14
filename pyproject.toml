@@ -37,9 +37,26 @@ dependencies = [
   "dask",
   "event-model",
   "mongoquery",
+  "ndindex",  # imported by tiled.ndslice
+  "numpy",
+  "pandas",
+  "pyarrow",
   "pytz",
-  "tiled[client] >=0.2.15",
+  "tiled[minimal-client] >=0.2.19",
   "tzlocal",
+  "xarray",
+]
+
+[project.optional-dependencies]
+# Writing ragged (variable-length) array data; imported lazily by TiledWriter.
+# Pins match the tiled[client] extra.
+ragged = [
+  "awkward >=2.4.3",
+  "ragged",
+]
+# All optional features.
+all = [
+  "bluesky-tiled-plugins[ragged]",
 ]
 
 
@@ -71,7 +88,7 @@ test = [
   "redis-json-dict",
   "suitcase-mongo",
   "tifffile",
-  "tiled[server] >=0.2.15",
+  "tiled[server] >=0.2.19",
 ]
 dev = [{ include-group = "test" }]
 docs = [

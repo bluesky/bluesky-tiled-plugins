@@ -11,6 +11,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# The jobs only check out the repo and run tests; the codecov upload uses its
+# own CODECOV_TOKEN secret, not the GITHUB_TOKEN.
+permissions:
+  contents: read
+
 env:
   # Many color libraries just need this variable to be set to any value.
   # Set it to 3 to support 8-bit color graphics (256 colors per channel)
@@ -89,6 +94,39 @@ jobs:
         uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
+
+  # Verify that the declared runtime dependencies are sufficient on their own:
+  # install the package with no extras and no dev/test dependency groups (so
+  # e.g. tiled[server] in the test group does not mask a missing runtime
+  # dependency) and smoke test it. See .github/scripts/minimal_smoke.py.
+  minimal-install:
+    name: Minimal install / Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    needs: [pre-commit]
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          allow-prereleases: true
+
+      - uses: astral-sh/setup-uv@v7
+
+      - name: Install package without extras or dependency groups
+        run: |
+          uv venv --python ${{ matrix.python-version }}
+          uv pip install .
+
+      - name: Smoke test the minimal installation
+        run: .venv/bin/python .github/scripts/minimal_smoke.py
 
   # Windows and macOS jobs run without Mongo/Redis. Tests gated on
   # TEST_MONGO_URI / TEST_REDIS_URI skip themselves automatically.
