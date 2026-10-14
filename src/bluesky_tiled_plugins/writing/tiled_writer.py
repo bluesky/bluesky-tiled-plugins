@@ -816,7 +816,14 @@ class _RunWriter(DocumentRouter):
 
         # 2. Write internal ragged array data, if any; remove it from the tabular data
         for key in self._int_ragged_array_keys[desc_name]:
-            from tiled.structures.ragged import make_ragged_array
+            try:
+                from tiled.structures.ragged import make_ragged_array
+            except ImportError as err:
+                raise ImportError(
+                    "Writing ragged (variable-length) array data requires optional "
+                    "dependencies. Install them with: "
+                    "pip install bluesky-tiled-plugins[ragged]"
+                ) from err
 
             arr_lst = [row.pop(key) for row in data_cache if key in row]
             shape = (len(arr_lst), *self.data_keys[key].get("shape", ()))
