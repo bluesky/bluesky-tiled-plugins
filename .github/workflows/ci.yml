@@ -11,6 +11,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# The jobs only check out the repo and run tests; the codecov upload uses its
+# own CODECOV_TOKEN secret, not the GITHUB_TOKEN.
+permissions:
+  contents: read
+
 env:
   # Many color libraries just need this variable to be set to any value.
   # Set it to 3 to support 8-bit color graphics (256 colors per channel)
