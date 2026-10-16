@@ -29,6 +29,7 @@ from event_model.documents.stream_datum import StreamDatum
 from event_model.documents.stream_resource import StreamResource
 from tiled.client import record_history
 from tiled.client.utils import ClientError
+from tiled.structures.core import Spec
 from tiled.utils import safe_json_dump
 from examples.render import render_templated_documents
 
@@ -433,6 +434,27 @@ def test_tiled_specs_from_start_doc(RE: RunEngine, client):
     assert "TomographyFlyscan" in specs
     # The marker key is consumed by the writer and not stored in start metadata.
     assert "tiled_specs" not in run.metadata["start"]
+
+
+def test_tiled_specs_accepts_spec_objects(RE: RunEngine, client):
+    """`tiled_specs` entries may also be `Spec` objects, mixed with dicts and strings."""
+    tw = TiledWriter(client)
+    RE(
+        bp.count([ophyd.sim.det], 1),
+        tw,
+        tiled_specs=[
+            Spec("TomoAlignmentScan", version="1"),
+            {"name": "XAS_Calib", "version": "1.0"},
+            "TomographyFlyscan",
+        ],
+    )
+    run = client.values().last()
+    specs = {spec.name: spec.version for spec in run.specs}
+
+    assert specs["TomoAlignmentScan"] == "1"
+    assert specs["XAS_Calib"] == "1.0"
+    assert "TomographyFlyscan" in specs
+    assert specs["BlueskyRun"] == "3.0"
 
 
 def test_no_tiled_specs_leaves_default_spec(RE, client):
