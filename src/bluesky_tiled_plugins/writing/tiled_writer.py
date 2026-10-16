@@ -989,7 +989,14 @@ class _RunWriter(DocumentRouter):
             key=doc["uid"],
             metadata={"start": truncate_json_overflow(dict(doc))},
             specs=[
-                *(Spec(s) if isinstance(s, str) else Spec(**s) for s in extra_specs),
+                *(
+                    s
+                    if isinstance(s, Spec)
+                    else Spec(s)
+                    if isinstance(s, str)
+                    else Spec(**s)
+                    for s in extra_specs
+                ),
                 Spec("BlueskyRun", version="3.0"),
             ],
             access_tags=self.access_tags,
