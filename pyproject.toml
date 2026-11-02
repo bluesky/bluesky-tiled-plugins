@@ -133,6 +133,11 @@ filterwarnings = [
   # so they remain readable; zarr warns that these dtypes have no stable Zarr V3
   # specification yet. This warning is emitted by the (in-process) test server.
   "ignore:The data type .* does not have a Zarr V3 specification",
+  # SQLAlchemy 2.1 deprecates the `noload` loader strategy, which tiled's catalog
+  # ORM uses for the Webhook.node relationship. Raising this warning as an error
+  # inside `configure_mappers()` poisons every mapper in the (in-process) test
+  # server; third-party issue, to be fixed in tiled.
+  "ignore:The ``noload`` loader strategy is deprecated:DeprecationWarning",
 ]
 log_level = "INFO"
 testpaths = ["tests"]
