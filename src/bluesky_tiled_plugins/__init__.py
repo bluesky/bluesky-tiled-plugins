@@ -6,6 +6,7 @@ from .streaming import (
     BlueskyStreamUpdate,
     subscribe_to_streams,
 )
+from .writing._buffer import BufferingWrapper
 from .writing.tiled_writer import TiledWriter, TiledInserter
 
 __all__ = [
@@ -13,6 +14,7 @@ __all__ = [
     "BlueskyRun",
     "BlueskyStreamSubscription",
     "BlueskyStreamUpdate",
+    "BufferingWrapper",
     "CatalogOfBlueskyRuns",
     "TiledInserter",
     "TiledWriter",
