@@ -9,7 +9,7 @@ import posixpath
 from typing import Any, Optional, cast
 import warnings
 
-import httpx
+import httpx2
 import numpy
 import pyarrow
 from event_model import (
@@ -129,9 +129,7 @@ def concatenate_stream_datums(*docs: StreamDatum):
             "All StreamDatum documents must reference the same stream_resource."
         )
     docs = tuple(sorted(docs, key=lambda doc: doc["indices"]["start"]))
-    for d1, d2 in zip(
-        docs[:-1], docs[1:]
-    ):  # TODO: use itertools.pairwise(docs) in python 3.10+
+    for d1, d2 in itertools.pairwise(docs):
         if d1["indices"]["stop"] != d2["indices"]["start"]:
             raise ValueError("StreamDatum documents must be consecutive.")
 
@@ -908,9 +906,9 @@ class _RunWriter(DocumentRouter):
         try:
             df_client.append_partition(0, table)
             return
-        except (httpx.TransportError, httpx.HTTPStatusError) as err:
+        except (httpx2.TransportError, httpx2.HTTPStatusError) as err:
             if (
-                isinstance(err, httpx.HTTPStatusError)
+                isinstance(err, httpx2.HTTPStatusError)
                 and err.response.status_code < 500
                 and err.response.status_code != 429
             ):

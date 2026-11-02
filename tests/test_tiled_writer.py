@@ -6,7 +6,7 @@ from collections.abc import Iterator
 from typing import cast
 from urllib.parse import parse_qs, urlparse
 
-import httpx
+import httpx2
 
 from bluesky import RunEngine
 import bluesky.plan_stubs as bps
@@ -1013,7 +1013,7 @@ def test_json_backup(client, tmpdir, monkeypatch):
     assert lines[6]["name"] == "stop"
 
 
-class _LoseAppendResponseOnce(httpx.BaseTransport):
+class _LoseAppendResponseOnce(httpx2.BaseTransport):
     """Forward the first PATCH /table/partition request to the wrapped transport
     -- so the server fully processes the append -- but raise ReadTimeout to the
     caller, simulating a lost response for an append that actually succeeded."""
@@ -1030,7 +1030,7 @@ class _LoseAppendResponseOnce(httpx.BaseTransport):
             and "/table/partition/" in str(request.url)
         ):
             self.tripped = True
-            raise httpx.ReadTimeout("Simulated lost response", request=request)
+            raise httpx2.ReadTimeout("Simulated lost response", request=request)
         return response
 
 

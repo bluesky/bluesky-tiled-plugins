@@ -15,7 +15,7 @@ description = "Integrations for using Tiled with Bluesky"
 readme = { file = "README.md", content-type = "text/markdown" }
 license = "BSD-3-Clause"
 license-files = ["LICENSE"]
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 classifiers = [
   "Development Status :: 1 - Planning",
   "Intended Audience :: Science/Research",
@@ -24,7 +24,6 @@ classifiers = [
   "Programming Language :: Python",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
-  "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
@@ -36,13 +35,14 @@ dynamic = ["version"]
 dependencies = [
   "dask",
   "event-model",
+  "httpx2",  # the generation used by the tiled client since 0.2.21
   "mongoquery",
   "ndindex",  # imported by tiled.ndslice
   "numpy",
   "pandas",
   "pyarrow",
   "pytz",
-  "tiled[minimal-client] >=0.2.19",
+  "tiled[minimal-client] >=0.2.21",
   "tzlocal",
   "xarray",
 ]
@@ -88,7 +88,7 @@ test = [
   "redis-json-dict",
   "suitcase-mongo",
   "tifffile",
-  "tiled[server] >=0.2.19",
+  "tiled[server] >=0.2.21",
 ]
 dev = [{ include-group = "test" }]
 docs = [
@@ -133,6 +133,11 @@ filterwarnings = [
   # so they remain readable; zarr warns that these dtypes have no stable Zarr V3
   # specification yet. This warning is emitted by the (in-process) test server.
   "ignore:The data type .* does not have a Zarr V3 specification",
+  # SQLAlchemy 2.1 deprecates the `noload` loader strategy, which tiled's catalog
+  # ORM uses for the Webhook.node relationship. Raising this warning as an error
+  # inside `configure_mappers()` poisons every mapper in the (in-process) test
+  # server; third-party issue, to be fixed in tiled.
+  "ignore:The ``noload`` loader strategy is deprecated:DeprecationWarning",
 ]
 log_level = "INFO"
 testpaths = ["tests"]
@@ -144,7 +149,7 @@ report.exclude_also = ['\.\.\.', 'if typing.TYPE_CHECKING:']
 
 [tool.mypy]
 files = ["src", "tests"]
-python_version = "3.10"
+python_version = "3.11"
 warn_unused_configs = true
 strict = false
 enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
@@ -174,7 +179,7 @@ ignore = [
 
 
 [tool.pylint]
-py-version = "3.10"
+py-version = "3.11"
 ignore-paths = [".*/_version.py"]
 reports.output-format = "colorized"
 similarities.ignore-imports = "yes"
