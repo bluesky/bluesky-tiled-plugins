@@ -129,9 +129,7 @@ def concatenate_stream_datums(*docs: StreamDatum):
             "All StreamDatum documents must reference the same stream_resource."
         )
     docs = tuple(sorted(docs, key=lambda doc: doc["indices"]["start"]))
-    for d1, d2 in zip(
-        docs[:-1], docs[1:]
-    ):  # TODO: use itertools.pairwise(docs) in python 3.10+
+    for d1, d2 in itertools.pairwise(docs):
         if d1["indices"]["stop"] != d2["indices"]["start"]:
             raise ValueError("StreamDatum documents must be consecutive.")
 
