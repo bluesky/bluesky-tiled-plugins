@@ -1,7 +1,7 @@
 import codecs
 import copy
 import functools
-import httpx
+import httpx2
 import io
 import json
 import keyword
@@ -534,13 +534,13 @@ class BlueskyRunV3(_BlueskyRunSQL):
                 msg = "Remote validation failed: " + "; ".join(notes)
                 raise ValidationException(msg, self.item["id"])
 
-        except httpx.HTTPStatusError as e:
+        except httpx2.HTTPStatusError as e:
             # Backcompatibility: if the server does not support validation endpoint,
             # it will return 404 Not Found error; in this case, attempt to validate
             # the data structure locally by the client itself (requires multiple
             # round-trips to the server, but better than nothing).
 
-            if response.status_code == httpx.codes.NOT_FOUND:
+            if response.status_code == httpx2.codes.NOT_FOUND:
                 warnings.warn(
                     "Tiled server does not support remote validation. "
                     "Attempting to validate the data structure by the client.",

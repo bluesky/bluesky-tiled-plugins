@@ -36,13 +36,14 @@ dynamic = ["version"]
 dependencies = [
   "dask",
   "event-model",
+  "httpx2",  # the generation used by the tiled client since 0.2.21
   "mongoquery",
   "ndindex",  # imported by tiled.ndslice
   "numpy",
   "pandas",
   "pyarrow",
   "pytz",
-  "tiled[minimal-client] >=0.2.19",
+  "tiled[minimal-client] >=0.2.21",
   "tzlocal",
   "xarray",
 ]
@@ -88,7 +89,7 @@ test = [
   "redis-json-dict",
   "suitcase-mongo",
   "tifffile",
-  "tiled[server] >=0.2.19",
+  "tiled[server] >=0.2.21",
 ]
 dev = [{ include-group = "test" }]
 docs = [

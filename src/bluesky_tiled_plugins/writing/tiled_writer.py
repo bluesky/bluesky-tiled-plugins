@@ -9,7 +9,7 @@ import posixpath
 from typing import Any, Optional, cast
 import warnings
 
-import httpx
+import httpx2
 import numpy
 import pyarrow
 from event_model import (
@@ -908,9 +908,9 @@ class _RunWriter(DocumentRouter):
         try:
             df_client.append_partition(0, table)
             return
-        except (httpx.TransportError, httpx.HTTPStatusError) as err:
+        except (httpx2.TransportError, httpx2.HTTPStatusError) as err:
             if (
-                isinstance(err, httpx.HTTPStatusError)
+                isinstance(err, httpx2.HTTPStatusError)
                 and err.response.status_code < 500
                 and err.response.status_code != 429
             ):
