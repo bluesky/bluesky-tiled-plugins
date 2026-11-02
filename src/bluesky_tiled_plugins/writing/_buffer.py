@@ -95,7 +95,9 @@ class BufferingWrapper:
                     break  # Received sentinel value to stop processing
                 self._wrapped_callback(*item)  # Delegate to wrapped callback
             except Exception as e:
-                logger.exception(f"Exception in {self._wrapped_callback.__class__.__name__}: {e}")
+                logger.exception(
+                    f"Exception in {self._wrapped_callback.__class__.__name__}: {e}"
+                )
             finally:
                 # Account for every retrieved item (including the sentinel and
                 # items whose processing raised), so that `flush` can rely on
@@ -154,4 +156,6 @@ class BufferingWrapper:
         if wait:
             self._thread.join()
 
-        logger.info(f"{self._wrapped_callback.__class__.__name__} shut down gracefully.")
+        logger.info(
+            f"{self._wrapped_callback.__class__.__name__} shut down gracefully."
+        )
