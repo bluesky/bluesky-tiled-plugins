@@ -63,8 +63,11 @@ def test_scan_table_plot_and_peaks(client, run_engine):
     ]
     assert len(data_rows) == 5
     assert f"generator scan ['{uid[:8]}']" in text
-    assert "det" in bec.peaks
-    assert bec.peaks["det"]["max"][0] == pytest.approx(0.0)
+    # Peaks are keyed like BestEffortCallback.peaks: stat-first, with both
+    # attribute and subscription access.
+    assert "det" in bec.peaks["max"]
+    assert bec.peaks.max["det"][0] == pytest.approx(0.0)
+    assert bec.peaks.cen["det"] == pytest.approx(0.0, abs=0.5)
 
 
 @pytest.mark.parametrize("retained_runs", [4, 0])
@@ -111,4 +114,27 @@ def test_baseline_and_time_dimension(client, run_engine):
     assert "Start-of-run baseline readings:" in text
     assert "End-of-run baseline readings:" in text
     assert "motor1" in text
+    assert f"generator count ['{uid[:8]}']" in text
+
+
+def test_takeover_after_missing_stop(client, run_engine):
+    """A run without a stop document (e.g. backed up by the writer) must not
+    block the runs that follow it."""
+    import uuid
+
+    lines = []
+    writer = TiledWriter(client)
+    with TiledBestEffortStreamer(client, out=lines.append, stop_timeout=0.5) as bec:
+        # A run that never gets a stop document.
+        broken_uid = str(uuid.uuid4())
+        writer("start", {"uid": broken_uid, "time": time.time(), "scan_id": 998})
+        bec.process_events(timeout=1.0)
+        assert f"Persistent Unique Scan ID: '{broken_uid}'" in lines
+
+        (uid,) = run_engine(count([det]))
+        _wait_for_finish(bec, uid)
+
+    text = "\n".join(lines)
+    assert f"Run {broken_uid[:8]} received no stop document" in text
+    assert f"Persistent Unique Scan ID: '{uid}'" in text
     assert f"generator count ['{uid[:8]}']" in text

@@ -38,6 +38,40 @@ def peak_stats(x: np.ndarray, y: np.ndarray) -> dict[str, Any]:
     }
 
 
+class PeakResults:
+    """Peak statistics keyed like ``BestEffortCallback.peaks``.
+
+    Each statistic is a dict keyed by field name, reachable both as an
+    attribute (``peaks.cen["det"]``) and by subscription
+    (``peaks["cen"]["det"]``), mirroring
+    ``bluesky.callbacks.best_effort.PeakResults``.
+    """
+
+    ATTRS = ("com", "cen", "max", "min", "fwhm")
+
+    def __init__(self) -> None:
+        for attr in self.ATTRS:
+            setattr(self, attr, {})
+
+    def clear(self) -> None:
+        for attr in self.ATTRS:
+            getattr(self, attr).clear()
+
+    def __getitem__(self, key: str) -> dict[str, Any]:
+        if key not in self.ATTRS:
+            raise KeyError(f"Keys are: {self.ATTRS}")
+        return getattr(self, key)
+
+    def __repr__(self) -> str:
+        lines = []
+        for attr in self.ATTRS:
+            lines.append(f"{attr}:")
+            lines.extend(
+                f"    {field}: {value}" for field, value in getattr(self, attr).items()
+            )
+        return "\n".join(lines)
+
+
 class _TablePrinter:
     """Text table laid out like ``bluesky.callbacks.LiveTable``."""
 
@@ -185,6 +219,9 @@ class _RunState:
     baseline_readings: int = 0
     # BEC holds the end-of-run baseline until the run's table is closed.
     end_baseline: list[str] = field(default_factory=list)
+    # Whether a stream that has not produced table updates is expected to
+    # (True), holds only external array data (False), or is unknown yet.
+    expects_table: dict[str, bool] = field(default_factory=dict)
 
 
 class TiledBestEffortStreamer:
@@ -244,13 +281,14 @@ class TiledBestEffortStreamer:
         # Runs are rendered one at a time; updates for later runs wait in _deferred.
         self._run: _RunState | None = None
         self._deferred: dict[str, list[tuple[Any, ...]]] = {}
+        self._deferred_start_at: dict[str, float] = {}
         self._data_subscription = None
         self._connected_at = 0.0
         self._heading_enabled = True
         self._table_enabled = True
         self._baseline_enabled = True
         self._plots_enabled = True
-        self.peaks: dict[str, dict[str, Any]] = {}
+        self.peaks = PeakResults()
 
     # -- BEC-compatible toggles ------------------------------------------------
 
@@ -343,29 +381,40 @@ class TiledBestEffortStreamer:
     def _dispatch(self, event: tuple[Any, ...]) -> None:
         kind = event[0]
         run_uid = event[1].run_uid if kind == "data" else event[1]
-        active = self._run.uid if self._run is not None else None
-        if run_uid != active and not (
-            active is None and kind == "start" and not self._deferred
-        ):
-            # Updates for runs that were filtered out never have a start and are dropped.
-            if kind == "start" or run_uid in self._deferred:
-                self._deferred.setdefault(run_uid, []).append(event)
-            return
+        if self._run is not None and run_uid == self._run.uid:
+            if kind != "start":  # a replayed start of the active run is a no-op
+                self._handle(event)
+        elif self._run is None and kind == "start" and not self._deferred:
+            self._handle(event)
+        elif kind == "start":
+            # Runs are rendered one at a time, in arrival order; this run
+            # waits for its turn.
+            self._deferred.setdefault(run_uid, []).append(event)
+            self._deferred_start_at.setdefault(run_uid, time.monotonic())
+        elif run_uid in self._deferred:
+            self._deferred[run_uid].append(event)
+        # Updates of runs with no start here were filtered out; drop them.
+
+    def _handle(self, event: tuple[Any, ...]) -> None:
         try:
-            getattr(self, f"_handle_{kind}")(*event[1:])
+            getattr(self, f"_handle_{event[0]}")(*event[1:])
         except Exception:
-            logger.exception("Failed to process Tiled update %r", kind)
+            logger.exception("Failed to process Tiled update %r", event[0])
 
     def run_forever(self, interval: float = 0.1) -> None:
         """Process updates and keep matplotlib figures responsive until interrupted."""
-        import matplotlib.pyplot as plt
-
-        plt.ion()
+        try:
+            import matplotlib.pyplot as plt
+        except ImportError:
+            plt = None
+        else:
+            plt.ion()
         try:
             while True:
                 self.process_events(timeout=interval)
-                for num in plt.get_fignums():
-                    plt.figure(num).canvas.flush_events()
+                if plt is not None:
+                    for num in plt.get_fignums():
+                        plt.figure(num).canvas.flush_events()
         except KeyboardInterrupt:
             pass
 
@@ -424,7 +473,15 @@ class TiledBestEffortStreamer:
     def _make_plotter(self, run: _RunState, dim_fields: list[str], y_keys: list[str]):
         if not y_keys:
             return None
-        import matplotlib.pyplot as plt
+        try:
+            import matplotlib.pyplot as plt
+        except ImportError:
+            logger.warning(
+                "matplotlib is not installed, so live plots are disabled; install "
+                'the plotting extra: pip install "bluesky-tiled-plugins[plotting]"'
+            )
+            self.disable_plots()
+            return None
 
         plt.ion()
         label = str(run.start.get("scan_id", run.uid[:8]))
@@ -467,31 +524,69 @@ class TiledBestEffortStreamer:
                 out(line)
 
     def _finish_stopped_run(self) -> None:
-        while self._run is not None and self._run.stop is not None:
-            run = self._run
-            num_events = run.stop.get("num_events", {}) or {}
-            complete = all(
-                name in run.streams and run.streams[name].rows >= n
-                for name, n in num_events.items()
-                if n
-            )
-            if (
-                not complete
-                and time.monotonic() - run.stop_received < self._stop_timeout
+        while (run := self._run) is not None:
+            now = time.monotonic()
+            if run.stop is None:
+                # A failed run may never receive a stop document (for example,
+                # TiledWriter backs it up without writing one). Once a newer
+                # run has been waiting for stop_timeout, move on -- like the
+                # BEC, where a new start document simply begins a new table.
+                waiting_since = min(self._deferred_start_at.values(), default=now)
+                if now - waiting_since < self._stop_timeout:
+                    return
+                self._out(
+                    f"Run {run.uid[:8]} received no stop document; moving on to the next run."
+                )
+            elif (
+                not self._run_complete(run)
+                and now - run.stop_received < self._stop_timeout
             ):
                 return
             self._finish_run(run)
             self._run = None
             if self._deferred:
-                for event in self._deferred.pop(next(iter(self._deferred))):
+                next_uid = next(iter(self._deferred))
+                self._deferred_start_at.pop(next_uid, None)
+                for event in self._deferred.pop(next_uid):
                     self._dispatch(event)
+
+    def _run_complete(self, run: _RunState) -> bool:
+        """Whether every table-producing stream has delivered all of its rows."""
+        for name, n in (run.stop.get("num_events", {}) or {}).items():
+            if not n:
+                continue
+            stream = run.streams.get(name)
+            if stream is not None:
+                if stream.rows < n:
+                    return False
+            elif self._stream_expects_table(run, name) is not False:
+                # An unseen stream blocks until it is known to hold only
+                # external (array) data, which never produces table updates.
+                return False
+        return True
+
+    def _stream_expects_table(self, run: _RunState, stream_name: str) -> bool | None:
+        """Whether an unseen stream will produce table updates; None if unknown yet."""
+        if stream_name not in run.expects_table:
+            try:
+                node = self._container[run.uid]
+                node = getattr(node, "base", node)
+                data_keys = dict(node[stream_name].metadata).get("data_keys", {})
+            except Exception:
+                return None  # not in Tiled yet; its data may still arrive
+            run.expects_table[stream_name] = any(
+                "external" not in spec for spec in data_keys.values()
+            )
+        return run.expects_table[stream_name]
 
     def _finish_run(self, run: _RunState) -> None:
         for stream in run.streams.values():
             if stream.table is not None:
                 stream.table.footer()
             if isinstance(stream.plotter, _LinePlotter):
-                self.peaks = stream.plotter.peaks()
+                for fld, stats in stream.plotter.peaks().items():
+                    for attr in PeakResults.ATTRS:
+                        self.peaks[attr][fld] = stats[attr]
         if self._table_enabled:
             plan = run.start.get("plan_name", "")
             self._out(
@@ -499,6 +594,8 @@ class TiledBestEffortStreamer:
             )
         for line in run.end_baseline:
             self._out(line)
+        if run.stop is None:
+            return
         status = run.stop.get("exit_status")
         if status != "success":
             self._out(
