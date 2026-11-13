@@ -9,7 +9,11 @@ from dataclasses import dataclass
 from typing import Any
 
 import pandas as pd
-from .streaming import BlueskyStreamSubscription, BlueskyStreamUpdate, subscribe_to_streams
+from .streaming import (
+    BlueskyStreamSubscription,
+    BlueskyStreamUpdate,
+    subscribe_to_streams,
+)
 from tiled.client.container import Container
 from tiled.client.stream import LiveChildCreated, LiveTableData
 
@@ -144,10 +148,14 @@ def subscribe_to_hinted_streams(
             run = getattr(run, "base", run)
             # A missing start means the run was already released; don't re-cache it.
             released = run_uid not in starts
-            start_doc = dict(run.metadata.get("start", {})) if released else starts[run_uid]
+            start_doc = (
+                dict(run.metadata.get("start", {})) if released else starts[run_uid]
+            )
             descriptor = dict(run[stream_name].metadata)
             data_keys = descriptor.get("data_keys", {})
-            dim_fields = [f[0] for f, name in _dimensions(start_doc) if name == stream_name]
+            dim_fields = [
+                f[0] for f, name in _dimensions(start_doc) if name == stream_name
+            ]
             fields = tuple(
                 dict.fromkeys(
                     f

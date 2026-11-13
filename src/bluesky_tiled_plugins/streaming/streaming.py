@@ -239,8 +239,7 @@ class BlueskyStreamSubscription:
         self,
         node: Container,
         callback: Callable[[LiveChildCreated], None],
-        on_metadata_updated: Callable[[LiveChildMetadataUpdated], None]
-        | None = None,
+        on_metadata_updated: Callable[[LiveChildMetadataUpdated], None] | None = None,
     ) -> None:
         def attach(subscription: Subscription) -> None:
             container_subscription = cast(ContainerSubscription, subscription)

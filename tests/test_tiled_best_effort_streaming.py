@@ -14,7 +14,10 @@ from ophyd.sim import det, motor, motor1  # noqa: E402
 from tiled.client import from_uri  # noqa: E402
 from tiled.server import SimpleTiledServer  # noqa: E402
 
-from bluesky_tiled_plugins.streaming import TiledBestEffortStreamer, subscribe_to_hinted_streams  # noqa: E402
+from bluesky_tiled_plugins.streaming import (
+    TiledBestEffortStreamer,
+    subscribe_to_hinted_streams,
+)  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -53,7 +56,11 @@ def test_scan_table_plot_and_peaks(client, run_engine):
     print(text)
     assert f"Persistent Unique Scan ID: '{uid}'" in text
     assert "motor" in text and "det" in text
-    data_rows = [line for line in lines if line.startswith("|") and line.split("|")[1].strip().isdigit()]
+    data_rows = [
+        line
+        for line in lines
+        if line.startswith("|") and line.split("|")[1].strip().isdigit()
+    ]
     assert len(data_rows) == 5
     assert f"generator scan ['{uid[:8]}']" in text
     assert "det" in bec.peaks
@@ -74,7 +81,8 @@ def test_subscribe_to_hinted_streams(client, run_engine, retained_runs):
         (uid,) = run_engine(scan([det], motor, -1, 1, 5))
         deadline = time.monotonic() + 15
         while (
-            sum(len(u.table) for u in updates if u.run_uid == uid) < 5 or uid not in stops
+            sum(len(u.table) for u in updates if u.run_uid == uid) < 5
+            or uid not in stops
         ) and time.monotonic() < deadline:
             time.sleep(0.1)
     finally:

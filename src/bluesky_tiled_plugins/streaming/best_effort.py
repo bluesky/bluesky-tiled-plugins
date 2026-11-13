@@ -53,7 +53,9 @@ class _TablePrinter:
         self.out = out
         # LiveTable: seq_num is 10 wide with a trailing pad; other columns are padded on both sides.
         self.widths = [10] + [max(min_width - 2, len(c)) for c in (_TIME, *columns)]
-        self.border = "+" + "-" * 11 + "".join("+" + "-" * (w + 2) for w in self.widths[1:]) + "+"
+        self.border = (
+            "+" + "-" * 11 + "".join("+" + "-" * (w + 2) for w in self.widths[1:]) + "+"
+        )
 
     def _line(self, cells: Iterable[str]) -> str:
         first, *rest = cells
@@ -68,7 +70,11 @@ class _TablePrinter:
 
     def row(self, row: pd.Series) -> None:
         when = datetime.fromtimestamp(row[_TIME]).strftime("%H:%M:%S.%f")[:10]
-        cells = [str(int(row[_SEQ_NUM])), when, *(self._format(c, row.get(c)) for c in self.columns)]
+        cells = [
+            str(int(row[_SEQ_NUM])),
+            when,
+            *(self._format(c, row.get(c)) for c in self.columns),
+        ]
         self.out(self._line(cells))
 
     def footer(self) -> None:
@@ -86,7 +92,9 @@ class _TablePrinter:
 class _LinePlotter:
     """1D live plot of several y fields against one x field, like ``LivePlot``."""
 
-    def __init__(self, fig_name: str, x_key: str, y_keys: list[str], label: str, x_offset: float):
+    def __init__(
+        self, fig_name: str, x_key: str, y_keys: list[str], label: str, x_offset: float
+    ):
         import matplotlib.pyplot as plt
 
         self.x_key, self.y_keys, self.x_offset = x_key, y_keys, x_offset
@@ -117,13 +125,19 @@ class _LinePlotter:
 
     def peaks(self) -> dict[str, dict[str, Any]]:
         x = np.asarray(self.x, dtype=float)
-        return {key: peak_stats(x, np.asarray(self.y[key], dtype=float)) for key in self.y_keys if self.y[key]}
+        return {
+            key: peak_stats(x, np.asarray(self.y[key], dtype=float))
+            for key in self.y_keys
+            if self.y[key]
+        }
 
 
 class _ScatterPlotter:
     """2D live scatter of y fields colored by value, like ``LiveScatter``."""
 
-    def __init__(self, fig_name: str, x_key: str, y_key: str, z_keys: list[str], label: str):
+    def __init__(
+        self, fig_name: str, x_key: str, y_key: str, z_keys: list[str], label: str
+    ):
         import matplotlib.pyplot as plt
 
         self.x_key, self.y_key, self.z_keys = x_key, y_key, z_keys
@@ -316,7 +330,11 @@ class TiledBestEffortStreamer:
         while True:
             remaining = deadline - time.monotonic()
             try:
-                event = self._queue.get(timeout=remaining) if remaining > 0 else self._queue.get_nowait()
+                event = (
+                    self._queue.get(timeout=remaining)
+                    if remaining > 0
+                    else self._queue.get_nowait()
+                )
             except queue.Empty:
                 break
             self._dispatch(event)
@@ -326,7 +344,9 @@ class TiledBestEffortStreamer:
         kind = event[0]
         run_uid = event[1].run_uid if kind == "data" else event[1]
         active = self._run.uid if self._run is not None else None
-        if run_uid != active and not (active is None and kind == "start" and not self._deferred):
+        if run_uid != active and not (
+            active is None and kind == "start" and not self._deferred
+        ):
             # Updates for runs that were filtered out never have a start and are dropped.
             if kind == "start" or run_uid in self._deferred:
                 self._deferred.setdefault(run_uid, []).append(event)
@@ -354,7 +374,9 @@ class TiledBestEffortStreamer:
         if self._heading_enabled:
             when = datetime.fromtimestamp(start.get("time", time.time()))
             self._out("")
-            self._out(f"Transient Scan ID: {start.get('scan_id')}     Time: {when:%Y-%m-%d %H:%M:%S}")
+            self._out(
+                f"Transient Scan ID: {start.get('scan_id')}     Time: {when:%Y-%m-%d %H:%M:%S}"
+            )
             self._out(f"Persistent Unique Scan ID: '{run_uid}'")
 
     def _handle_data(self, update: HintedStreamUpdate) -> None:
@@ -386,13 +408,17 @@ class TiledBestEffortStreamer:
 
         data_keys = update.descriptor.get("data_keys", {})
         columns = list(update.fields)
-        dim_fields = [fields[0] for fields, name in _dimensions(run.start) if name == stream_name]
+        dim_fields = [
+            fields[0] for fields, name in _dimensions(run.start) if name == stream_name
+        ]
 
         if self._table_enabled:
             stream.table = _TablePrinter(columns, data_keys, self._out)
             stream.table.header()
         if self._plots_enabled and dim_fields:
-            stream.plotter = self._make_plotter(run, dim_fields, [c for c in columns if c not in dim_fields])
+            stream.plotter = self._make_plotter(
+                run, dim_fields, [c for c in columns if c not in dim_fields]
+            )
         return stream
 
     def _make_plotter(self, run: _RunState, dim_fields: list[str], y_keys: list[str]):
@@ -405,13 +431,23 @@ class TiledBestEffortStreamer:
         if len(dim_fields) == 1:
             x_key = dim_fields[0]
             x_offset = run.start.get("time", 0.0) if x_key == _TIME else 0.0
-            return _LinePlotter(f"{' '.join(sorted(y_keys))} vs {x_key}", x_key, y_keys, label, x_offset)
+            return _LinePlotter(
+                f"{' '.join(sorted(y_keys))} vs {x_key}", x_key, y_keys, label, x_offset
+            )
         if len(dim_fields) == 2:
             x_key, y_key = dim_fields
-            return _ScatterPlotter(f"{' '.join(sorted(y_keys))} vs {x_key} {y_key}", x_key, y_key, y_keys, label)
+            return _ScatterPlotter(
+                f"{' '.join(sorted(y_keys))} vs {x_key} {y_key}",
+                x_key,
+                y_key,
+                y_keys,
+                label,
+            )
         return None
 
-    def _print_baseline(self, run: _RunState, stream: _StreamState, df: pd.DataFrame) -> None:
+    def _print_baseline(
+        self, run: _RunState, stream: _StreamState, df: pd.DataFrame
+    ) -> None:
         if not self._baseline_enabled:
             return
         data_keys = stream.descriptor.get("data_keys", {})
@@ -435,9 +471,14 @@ class TiledBestEffortStreamer:
             run = self._run
             num_events = run.stop.get("num_events", {}) or {}
             complete = all(
-                name in run.streams and run.streams[name].rows >= n for name, n in num_events.items() if n
+                name in run.streams and run.streams[name].rows >= n
+                for name, n in num_events.items()
+                if n
             )
-            if not complete and time.monotonic() - run.stop_received < self._stop_timeout:
+            if (
+                not complete
+                and time.monotonic() - run.stop_received < self._stop_timeout
+            ):
                 return
             self._finish_run(run)
             self._run = None
@@ -453,9 +494,13 @@ class TiledBestEffortStreamer:
                 self.peaks = stream.plotter.peaks()
         if self._table_enabled:
             plan = run.start.get("plan_name", "")
-            self._out(f"generator {plan} ['{run.uid[:8]}'] (scan num: {run.start.get('scan_id')})")
+            self._out(
+                f"generator {plan} ['{run.uid[:8]}'] (scan num: {run.start.get('scan_id')})"
+            )
         for line in run.end_baseline:
             self._out(line)
         status = run.stop.get("exit_status")
         if status != "success":
-            self._out(f"Run {run.uid[:8]} exited with status {status!r}: {run.stop.get('reason', '')}")
+            self._out(
+                f"Run {run.uid[:8]} exited with status {status!r}: {run.stop.get('reason', '')}"
+            )
