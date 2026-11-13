@@ -15,6 +15,7 @@ from tiled.client.stream import (
     LiveArrayData,
     LiveArrayRef,
     LiveChildCreated,
+    LiveChildMetadataUpdated,
     LiveTableData,
     Subscription,
     TableSubscription,
@@ -96,6 +97,7 @@ class BlueskyStreamSubscription:
         start: int | None,
         max_size: int,
         run_filter: Callable[[LiveChildCreated], bool] | None,
+        on_run_stop: Callable[[str, Mapping[str, Any]], None] | None = None,
     ) -> None:
         """
         Create and start a managed stream subscription.
@@ -125,6 +127,9 @@ class BlueskyStreamSubscription:
             ``1_000_000``.
         run_filter : Callable[[LiveChildCreated], bool] or None
             Optional raw Tiled run predicate.
+        on_run_stop : Callable[[str, Mapping[str, Any]], None] or None
+            Optional function called once with the run uid and stop document
+            of each accepted run. See :func:`subscribe_to_streams`.
 
         Raises
         ------
@@ -142,6 +147,8 @@ class BlueskyStreamSubscription:
         self._streams = None if streams is None else dict(streams)
         self._callback = callback
         self._run_filter = run_filter
+        self._on_run_stop = on_run_stop
+        self._accepted_runs: set[str] = set()
         self._start = start
         self._max_size = max_size
         self._lock = threading.Lock()
@@ -156,7 +163,11 @@ class BlueskyStreamSubscription:
 
         established = False
         try:
-            self._subscribe_container(container, self._handle_container_child)
+            self._subscribe_container(
+                container,
+                self._handle_container_child,
+                self._handle_run_metadata_updated,
+            )
             established = True
         finally:
             if not established:
@@ -228,11 +239,16 @@ class BlueskyStreamSubscription:
         self,
         node: Container,
         callback: Callable[[LiveChildCreated], None],
+        on_metadata_updated: Callable[[LiveChildMetadataUpdated], None]
+        | None = None,
     ) -> None:
         def attach(subscription: Subscription) -> None:
-            cast(ContainerSubscription, subscription).child_created.add_callback(
-                callback
-            )
+            container_subscription = cast(ContainerSubscription, subscription)
+            container_subscription.child_created.add_callback(callback)
+            if on_metadata_updated is not None:
+                container_subscription.child_metadata_updated.add_callback(
+                    on_metadata_updated
+                )
 
         self._subscribe(node, callback, attach)
 
@@ -317,8 +333,21 @@ class BlueskyStreamSubscription:
                     "Run filter failed for Tiled run %s at %s", run_uid, child.uri
                 )
                 return
+        with self._lock:
+            self._accepted_runs.add(run_uid)
         callback = functools.partial(self._handle_run_child, run_uid)
         self._subscribe_child_container(child, callback)
+
+    def _handle_run_metadata_updated(self, update: LiveChildMetadataUpdated) -> None:
+        stop = update.metadata.get("stop")
+        if stop is None or self._on_run_stop is None:
+            return
+        with self._lock:
+            if self._closed or update.key not in self._accepted_runs:
+                return
+            # Forgetting the run makes the hook fire once and keeps the set bounded.
+            self._accepted_runs.discard(update.key)
+        self._on_run_stop(update.key, stop)
 
     def _handle_run_child(
         self,
@@ -476,6 +505,7 @@ def subscribe_to_streams(
     metadata_filter: Callable[[Mapping[str, Any]], bool] | None = None,
     required_specs: str | Iterable[str] | None = None,
     run_filter: Callable[[LiveChildCreated], bool] | None = None,
+    on_run_stop: Callable[[str, Mapping[str, Any]], None] | None = None,
     start: int | None = 0,
     max_size: int = 1_000_000,
 ) -> BlueskyStreamSubscription:
@@ -501,6 +531,11 @@ def subscribe_to_streams(
         One spec name or every spec name required for a run to match.
     run_filter : Callable[[LiveChildCreated], bool] or None, optional
         Predicate applied to the raw Tiled run-creation update.
+    on_run_stop : Callable[[str, Mapping[str, Any]], None] or None, optional
+        Function called as ``on_run_stop(run_uid, stop_document)`` once for each
+        run that passed the filters, when its stop document is recorded. Runs
+        rejected by the filters never trigger it, nor do later metadata updates
+        of the run without ``"stop"``.
     start : int or None, optional
         Tiled sequence number supplied to every owned subscription. The default,
         ``0``, replays records retained by the streaming cache. ``None`` receives
@@ -536,6 +571,15 @@ def subscribe_to_streams(
     columns remain one native table update; this function does not join or align
     updates across nodes or streams.
 
+    ``on_run_stop`` arrives on the root container subscription, so it follows
+    the run's creation but has no ordering relative to the run's data, which
+    arrives on other subscriptions. It may run before the last data callbacks
+    of the same run; to wait for all data, compare against
+    ``stop["num_events"]`` or wait briefly. Like ``callback``, it runs on a
+    Tiled thread and its exceptions are not caught. With ``start=0``, a
+    finished run still in the streaming cache replays both its creation and
+    its stop.
+
     With Tiled 0.2.18, the server can stream ragged nodes, but
     ``RaggedClient`` has no subscription API and the client has no ragged live
     schema or update model. ``BytesClient`` likewise has no subscription API,
@@ -562,4 +606,5 @@ def subscribe_to_streams(
         start=start,
         max_size=max_size,
         run_filter=_compose_run_filter(metadata_filter, required_specs, run_filter),
+        on_run_stop=on_run_stop,
     )
