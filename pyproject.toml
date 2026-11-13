@@ -42,7 +42,7 @@ dependencies = [
   "pandas",
   "pyarrow",
   "pytz",
-  "tiled[minimal-client] >=0.2.21",
+  "tiled[minimal-client] >=0.2.22",
   "tzlocal",
   "xarray",
 ]
@@ -88,7 +88,7 @@ test = [
   "redis-json-dict",
   "suitcase-mongo",
   "tifffile",
-  "tiled[server] >=0.2.21",
+  "tiled[server] >=0.2.22",
 ]
 dev = [{ include-group = "test" }]
 docs = [

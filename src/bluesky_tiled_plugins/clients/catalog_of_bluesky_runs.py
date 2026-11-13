@@ -7,11 +7,15 @@ from typing import Any
 
 from tiled.client.container import Container
 from tiled.client.utils import handle_error, retry_context
-from tiled.queries import Comparison, Eq, Like
+from tiled.queries import Comparison, Eq, KeyLike, KeyLookup, Like
 from tiled.utils import safe_json_dump
 
 from ..queries import RawMongo, ScanIDRange, TimeRange, _PartialUID, _ScanID
 from .bluesky_run import BlueskyRunV2, BlueskyRunV3
+
+# Queries whose `key` is matched against the node key (the run uid) rather
+# than being a path into the metadata.
+_NODE_KEY_QUERIES = (KeyLookup, KeyLike)
 
 
 class CatalogOfBlueskyRuns(Container):
@@ -96,6 +100,22 @@ class CatalogOfBlueskyRuns(Container):
                 return bool(spec.version and spec.version.startswith("3."))
         return False
 
+    @functools.cached_property
+    def _supports_key_like(self):
+        # Only use `key_like` queries when the server supports and advertises it.
+        return "key_like" in self.context.server_info.queries
+
+    def _partial_uid_query(self, partial_uid):
+        """The query used to match runs whose uid starts with `partial_uid`.
+
+        A run's key is its uid, so matching on the key (`KeyLike`) uses the
+        catalog's indexed `key` column. The alternative, `Like` on the `start.uid`
+        metadata field, cannot use an index and scans every run in the catalog (slow).
+        """
+        if self._supports_key_like:
+            return KeyLike(partial_uid, before=False)
+        return Like("start.uid", f"{partial_uid}%")
+
     def __getitem__(self, key):
         # For convenience and backward-compatiblity reasons, we support
         # some "magic" here that is helpful in an interactive setting.
@@ -146,7 +166,7 @@ class CatalogOfBlueskyRuns(Container):
                 f"Partial uid {partial_uid!r} is too short. It must include at least 5 characters."
             )
         if self.is_sql:
-            query = Like("start.uid", f"{partial_uid}%")
+            query = self._partial_uid_query(partial_uid)
         else:
             query = _PartialUID(partial_uids=[partial_uid])
         results = self.search(query).values().head(2)
@@ -200,7 +220,7 @@ class CatalogOfBlueskyRuns(Container):
                 )
             (partial_uid,) = query.partial_uids
             if self.is_sql:
-                query = Like("start.uid", f"{partial_uid}%")
+                query = self._partial_uid_query(partial_uid)
             else:
                 query = _PartialUID(partial_uids=[partial_uid])
             result = super().search(query)
@@ -212,13 +232,18 @@ class CatalogOfBlueskyRuns(Container):
             query = RawMongo(start=query)
             result = super().search(query)
         else:
-            if hasattr(query, "key"):
-                if not (
+            # For queries on metadata, `key` is a path into the metadata;
+            # default to searching the RunStart document. For the queries in
+            # _NODE_KEY_QUERIES, `key` is matched against the node key (the run uid).
+            if (
+                hasattr(query, "key")
+                and not isinstance(query, _NODE_KEY_QUERIES)
+                and not (
                     query.key.startswith("start.") or query.key.startswith("stop.")
-                ):
-                    # Default to searching RunStart document.
-                    query = copy.copy(query)
-                    query.key = f"start.{query.key}"
+                )
+            ):
+                query = copy.copy(query)
+                query.key = f"start.{query.key}"
             result = super().search(query)
         return result
 
