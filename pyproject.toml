@@ -81,6 +81,7 @@ test = [
   "fakeredis",
   "h5py",
   "jinja2",
+  "matplotlib",
   "mongomock",
   "ophyd",
   "pre-commit",
