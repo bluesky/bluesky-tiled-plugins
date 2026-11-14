@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import threading
-from collections import deque
+import functools
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -36,7 +35,9 @@ def _hinted_fields(descriptor: dict[str, Any]) -> list[str]:
 
     fields: list[str] = []
     for obj, keys in by_object.items():
-        obj_fields = hints[obj].get("fields", []) if obj in hints else keys
+        # Like bluesky, fall back to all of the object's keys both when the
+        # object has no hints and when its hints have no "fields".
+        obj_fields = hints.get(obj, {}).get("fields", keys)
         fields.extend(f for f in obj_fields if f in data_keys and f not in fields)
     return fields
 
@@ -117,55 +118,36 @@ def subscribe_to_hinted_streams(
         Called with the run uid and stop document of each accepted run. It may
         precede the run's last data updates; see ``subscribe_to_streams``.
     retained_runs : int, optional
-        Number of stopped runs whose start document and descriptors stay cached.
-        Data arriving for a run after its release is still delivered, but
-        refetches the start document and descriptor from Tiled on every update.
+        Scales the bounded cache of start documents and descriptors (roughly
+        the number of recent runs whose streams stay cached). Data arriving
+        for an evicted stream is still delivered, but refetches the start
+        document and descriptor from Tiled.
     start, max_size
         Passed through to ``subscribe_to_streams``.
     """
     if retained_runs < 0:
         raise ValueError(f"retained_runs must be non-negative, not {retained_runs}.")
-    lock = threading.Lock()
-    starts: dict[str, dict[str, Any]] = {}
-    streams: dict[tuple[str, str], tuple[dict[str, Any], tuple[str, ...]]] = {}
-    stopped: deque[str] = deque()
 
-    def accept_run(update: LiveChildCreated) -> bool:
-        if run_filter is not None and not run_filter(update):
-            return False
-        with lock:
-            starts[update.key] = dict(update.metadata.get("start", {}))
-        return True
-
+    # Thread-safe bounded cache; concurrent first updates of one stream may
+    # both fetch, which is harmless.
+    @functools.lru_cache(maxsize=32 * max(1, retained_runs))
     def stream_info(
         run_uid: str, stream_name: str
     ) -> tuple[dict[str, Any], dict[str, Any], tuple[str, ...]]:
-        with lock:
-            key = (run_uid, stream_name)
-            if key in streams:
-                return (starts[run_uid], *streams[key])
-            run = container[run_uid]
-            run = getattr(run, "base", run)
-            # A missing start means the run was already released; don't re-cache it.
-            released = run_uid not in starts
-            start_doc = (
-                dict(run.metadata.get("start", {})) if released else starts[run_uid]
+        run = container[run_uid]
+        run = getattr(run, "base", run)
+        start_doc = dict(run.metadata.get("start", {}))
+        descriptor = dict(run[stream_name].metadata)
+        data_keys = descriptor.get("data_keys", {})
+        dim_fields = [f[0] for f, name in _dimensions(start_doc) if name == stream_name]
+        fields = tuple(
+            dict.fromkeys(
+                f
+                for f in (*dim_fields, *_hinted_fields(descriptor))
+                if f in data_keys and _is_scalar(data_keys[f])
             )
-            descriptor = dict(run[stream_name].metadata)
-            data_keys = descriptor.get("data_keys", {})
-            dim_fields = [
-                f[0] for f, name in _dimensions(start_doc) if name == stream_name
-            ]
-            fields = tuple(
-                dict.fromkeys(
-                    f
-                    for f in (*dim_fields, *_hinted_fields(descriptor))
-                    if f in data_keys and _is_scalar(data_keys[f])
-                )
-            )
-            if not released:
-                streams[key] = (descriptor, fields)
-            return start_doc, descriptor, fields
+        )
+        return start_doc, descriptor, fields
 
     def on_update(update: BlueskyStreamUpdate) -> None:
         if not isinstance(update.update, LiveTableData):
@@ -183,23 +165,12 @@ def subscribe_to_hinted_streams(
             )
         )
 
-    def run_stopped(run_uid: str, stop: Mapping[str, Any]) -> None:
-        with lock:
-            stopped.append(run_uid)
-            while len(stopped) > retained_runs:
-                released = stopped.popleft()
-                starts.pop(released, None)
-                for key in [key for key in streams if key[0] == released]:
-                    del streams[key]
-        if on_run_stop is not None:
-            on_run_stop(run_uid, stop)
-
     return subscribe_to_streams(
         container,
         on_update,
         streams=None,
-        run_filter=accept_run,
-        on_run_stop=run_stopped,
+        run_filter=run_filter,
+        on_run_stop=on_run_stop,
         start=start,
         max_size=max_size,
     )
