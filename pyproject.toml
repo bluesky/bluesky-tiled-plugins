@@ -54,9 +54,12 @@ ragged = [
   "awkward >=2.4.3",
   "ragged",
 ]
+plotting = [
+  "matplotlib",
+]
 # All optional features.
 all = [
-  "bluesky-tiled-plugins[ragged]",
+  "bluesky-tiled-plugins[ragged, plotting]",
 ]
 
 
@@ -78,6 +81,7 @@ test = [
   "fakeredis",
   "h5py",
   "jinja2",
+  "matplotlib",
   "mongomock",
   "ophyd",
   "pre-commit",
@@ -138,6 +142,12 @@ filterwarnings = [
   # inside `configure_mappers()` poisons every mapper in the (in-process) test
   # server; third-party issue, to be fixed in tiled.
   "ignore:The ``noload`` loader strategy is deprecated:DeprecationWarning",
+  # Newer Alembic warns when alembic.ini lacks `path_separator`; the config is
+  # shipped by tiled (third-party issue).
+  "ignore:No path_separator found in configuration:DeprecationWarning",
+  # websockets 17.1 deprecates non-context-manager `connect()`, which tiled's
+  # subscription client still uses (third-party issue).
+  "ignore:connect\\(\\) must be used as a context manager:DeprecationWarning",
 ]
 log_level = "INFO"
 testpaths = ["tests"]

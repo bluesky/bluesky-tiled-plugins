@@ -10,4 +10,5 @@ tutorials/installation
 tutorials/saving
 tutorials/search
 tutorials/streaming
+tutorials/live-visualization
 ```
