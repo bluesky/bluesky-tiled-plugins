@@ -3,6 +3,8 @@ import uuid
 
 import pytest
 from examples.render import render_templated_documents
+from tiled.queries import KeyLike, KeyLookup, Like
+from tiled.structures.core import Spec
 
 from bluesky_tiled_plugins import TiledWriter
 from bluesky_tiled_plugins.clients.bluesky_run import _iter_json_seq
@@ -179,3 +181,70 @@ def test_export_nd_numeric_tabular_array(client):
     events = [doc for name, doc in run.v3.documents() if name == "event"]
     assert len(events) == 1
     assert events[0]["data"]["img"] == img
+
+
+@pytest.fixture(scope="module")
+def runs_catalog(client):
+    """A SQL-backed `CatalogOfBlueskyRuns` holding two runs with a shared uid prefix."""
+    # Unique name: the catalog is shared across the parametrized `app` fixture.
+    name = f"runs_{uuid.uuid4().hex[:8]}"
+    client.create_container(name, specs=[Spec("CatalogOfBlueskyRuns", version="3.0")])
+    runs = client[name]
+    # A run's node key is its uid. The two share a 5-character prefix, so a
+    # 5-character partial uid is ambiguous while a 6-character one is unique.
+    uids = ["abcde1" + uuid.uuid4().hex[6:], "abcde2" + uuid.uuid4().hex[6:]]
+    for uid in uids:
+        runs.create_container(
+            uid, metadata={"start": {"uid": uid}}, specs=[Spec("BlueskyRun", "3.0")]
+        )
+    return runs, uids
+
+
+@pytest.mark.parametrize("server_has_key_like", [True, False])
+def test_partial_uid_lookup(runs_catalog, monkeypatch, server_has_key_like):
+    """KeyLike (on the run key) when the server supports it, else Like on metadata."""
+    runs, uids = runs_catalog
+    if not server_has_key_like:
+        monkeypatch.setattr(
+            runs.context.server_info,
+            "queries",
+            [q for q in runs.context.server_info.queries if q != "key_like"],
+        )
+    # A fresh client, so that the cached support check is recomputed.
+    runs = type(runs)(
+        runs.context, item=runs.item, structure_clients=runs.structure_clients
+    )
+
+    if server_has_key_like:
+        expected_query = KeyLike("abcde1", before=False)
+    else:
+        expected_query = Like("start.uid", "abcde1%")
+    assert runs._partial_uid_query("abcde1") == expected_query
+
+    assert runs["abcde1"].metadata["start"]["uid"] == uids[0]
+    assert runs.uid["abcde2"].metadata["start"]["uid"] == uids[1]
+    assert runs[uids[0]].metadata["start"]["uid"] == uids[0]  # full uid
+
+
+@pytest.mark.parametrize(
+    "partial_uid, error, match",
+    [
+        ("abcde", ValueError, "multiple matches"),
+        ("zzzzz", KeyError, None),
+        ("abc", ValueError, "too short"),
+    ],
+)
+def test_partial_uid_lookup_errors(runs_catalog, partial_uid, error, match):
+    runs, _ = runs_catalog
+    with pytest.raises(error, match=match):
+        runs[partial_uid]
+
+
+def test_search_does_not_rewrite_node_key_queries(runs_catalog):
+    """
+    `search` prefixes metadata keys with 'start.'; the key of KeyLike and
+    KeyLookup is the node key (the run uid) and must be passed through as is.
+    """
+    runs, uids = runs_catalog
+    assert list(runs.search(KeyLike("abcde1", before=False))) == [uids[0]]
+    assert list(runs.search(KeyLookup(uids[1]))) == [uids[1]]
