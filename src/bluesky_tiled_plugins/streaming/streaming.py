@@ -284,7 +284,7 @@ class BlueskyStreamSubscription:
                     return
                 subscription = node.subscribe()
                 close_callback = functools.partial(
-                    self._handle_subscription_closed, uri, subscription
+                    self._handle_subscription_closed, uri
                 )
                 attach(subscription)
                 subscription.stream_closed.add_callback(close_callback)
