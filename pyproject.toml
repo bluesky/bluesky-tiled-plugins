@@ -54,9 +54,12 @@ ragged = [
   "awkward >=2.4.3",
   "ragged",
 ]
+plotting = [
+  "matplotlib",
+]
 # All optional features.
 all = [
-  "bluesky-tiled-plugins[ragged]",
+  "bluesky-tiled-plugins[ragged, plotting]",
 ]
 
 
@@ -78,6 +81,7 @@ test = [
   "fakeredis",
   "h5py",
   "jinja2",
+  "matplotlib",
   "mongomock",
   "ophyd",
   "pre-commit",

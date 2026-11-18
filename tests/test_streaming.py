@@ -969,3 +969,128 @@ def test_subscribe_to_streams_rejects_empty_selection(
 ):
     with pytest.raises(ValueError, match=message):
         subscribe_to_streams(streaming_client, lambda update: None, streams=streams)
+
+
+def _write_run(writer, run_uid, metadata=None):
+    descriptor_uid = uuid.uuid4().hex
+    writer("start", _start_document(run_uid, metadata=metadata))
+    writer(
+        "descriptor",
+        _descriptor_document(
+            run_uid, descriptor_uid, "primary", _scalar_data_keys("x")
+        ),
+    )
+    writer("event", _event_document(descriptor_uid, 1, {"x": 1.0}))
+    writer("stop", _stop_document(run_uid, {"primary": 1}))
+
+
+def test_on_run_stop_called_once_per_run(streaming_client):
+    run_uids = [uuid.uuid4().hex, uuid.uuid4().hex]
+    stops: queue.Queue[tuple[str, dict]] = queue.Queue()
+    writer = TiledWriter(streaming_client, batch_size=1)
+
+    with subscribe_to_streams(
+        streaming_client,
+        lambda update: None,
+        streams={"primary": "x"},
+        on_run_stop=lambda uid, stop: stops.put((uid, dict(stop))),
+    ):
+        for run_uid in run_uids:
+            _write_run(writer, run_uid)
+        received = [stops.get(timeout=5) for _ in run_uids]
+        with pytest.raises(queue.Empty):
+            stops.get(timeout=1)
+
+    assert [uid for uid, _ in received] == run_uids
+    for run_uid, stop in received:
+        assert stop["run_start"] == run_uid
+        assert stop["exit_status"] == "success"
+
+
+@pytest.mark.parametrize(
+    "filters",
+    [
+        pytest.param(
+            {"metadata_filter": lambda start: start.get("group") == "accepted"},
+            id="metadata_filter",
+        ),
+        pytest.param({"required_specs": "Accepted"}, id="required_specs"),
+        pytest.param(
+            {
+                "run_filter": lambda update: update.metadata["start"].get("group")
+                == "accepted"
+            },
+            id="run_filter",
+        ),
+    ],
+)
+def test_on_run_stop_skips_filtered_runs(streaming_client, filters):
+    accepted_run_uid = uuid.uuid4().hex
+    rejected_run_uid = uuid.uuid4().hex
+    stops: queue.Queue[str] = queue.Queue()
+    writer = TiledWriter(streaming_client, batch_size=1)
+
+    with subscribe_to_streams(
+        streaming_client,
+        lambda update: None,
+        streams={"primary": "x"},
+        on_run_stop=lambda uid, stop: stops.put(uid),
+        **filters,
+    ):
+        _write_run(writer, rejected_run_uid, metadata={"group": "rejected"})
+        _write_run(
+            writer,
+            accepted_run_uid,
+            metadata={"group": "accepted", "tiled_specs": ["Accepted"]},
+        )
+        assert stops.get(timeout=5) == accepted_run_uid
+        with pytest.raises(queue.Empty):
+            stops.get(timeout=1)
+
+
+def test_on_run_stop_not_called_after_disconnect(streaming_client):
+    run_uid = uuid.uuid4().hex
+    descriptor_uid = uuid.uuid4().hex
+    stops: queue.Queue[str] = queue.Queue()
+    writer = TiledWriter(streaming_client, batch_size=1)
+
+    subscription = subscribe_to_streams(
+        streaming_client,
+        lambda update: None,
+        streams={"primary": "x"},
+        start=None,
+        on_run_stop=lambda uid, stop: stops.put(uid),
+    )
+    try:
+        writer("start", _start_document(run_uid))
+        writer(
+            "descriptor",
+            _descriptor_document(
+                run_uid, descriptor_uid, "primary", _scalar_data_keys("x")
+            ),
+        )
+        writer("event", _event_document(descriptor_uid, 1, {"x": 1.0}))
+    finally:
+        subscription.disconnect()
+    writer("stop", _stop_document(run_uid, {"primary": 1}))
+
+    with pytest.raises(queue.Empty):
+        stops.get(timeout=1)
+
+
+def test_on_run_stop_ignores_later_metadata_updates(streaming_client):
+    run_uid = uuid.uuid4().hex
+    stops: queue.Queue[str] = queue.Queue()
+    writer = TiledWriter(streaming_client, batch_size=1)
+
+    with subscribe_to_streams(
+        streaming_client,
+        lambda update: None,
+        streams={"primary": "x"},
+        on_run_stop=lambda uid, stop: stops.put(uid),
+    ):
+        _write_run(writer, run_uid)
+        assert stops.get(timeout=5) == run_uid
+        streaming_client[run_uid].update_metadata({"notes": ["edited later"]})
+        with pytest.raises(queue.Empty):
+            stops.get(timeout=1)
