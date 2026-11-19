@@ -173,8 +173,10 @@ tw = TiledWriter(tiled_client, batch_size=1)
 RE.subscribe(tw)
 ```
 
-By default `TiledWriter` caches documents into large batches before writing them
-to Tiled. For "live" access to data, set `batch_size=1`.
+By default `TiledWriter` caches documents into batches of 100 Events before
+writing them to Tiled. For "live" access to data, set `batch_size=1`; when
+writing many small Events in bulk (for example a database migration), a larger
+value means fewer requests.
 
 ### Acquire Data and Access It
 

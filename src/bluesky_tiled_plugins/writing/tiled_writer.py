@@ -56,8 +56,12 @@ from .consolidators import (
 )
 from ..clients.catalog_of_bluesky_runs import CatalogOfBlueskyRuns
 
-# Aggregate the Event table rows and StreamDatums in batches before writing to Tiled
-BATCH_SIZE = 10000
+# Aggregate the Event table rows and StreamDatums in batches before writing to Tiled.
+# A batch is sent as one write request for the table and one for each internal array, so the size
+# of a request is the batch size times the size of one Event's data. The default is kept modest
+# because Events that carry arrays can be a few hundred kB each, and a whole Run sent in one
+# request can then reach hundreds of MB.
+BATCH_SIZE = 100
 
 # Maximum size of internal arrays from Event docs to write to tabular (SQL) storage; larger arrays will be written
 # as zarr. Set to 0 to write all internal arrays as zarr, and -1 to write all internal arrays to tabular storage.
@@ -1283,9 +1287,12 @@ class TiledWriter:
             to Tiled. All documents for the entire Bluesky Run will be written in JSONLines format,
             allowing for recovery in case of errors during the writing process.
         batch_size : int
-            The number of Events or StreamDatums collect before writing them to Tiled.
-            This is useful for reducing the number of write operations and improving performance when
-            writing large amounts of data (e.g. database migration). For streaming applications,
+            The number of Events or StreamDatums collect before writing them to Tiled (default 100).
+            A batch of Events is sent as one request for the table and one for each internal array,
+            so the size of a request grows with the batch size and with the size of one Event's data;
+            anything left over is written when the Run stops.
+            A larger value reduces the number of write operations and improves performance when
+            writing large amounts of small Events (e.g. database migration). For streaming applications,
             it is recommended to set this parameter to <= 1, so that each Event or StreamDatum is written
             to Tiled immediately after they are received.
         validate : bool
