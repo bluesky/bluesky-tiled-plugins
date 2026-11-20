@@ -56,8 +56,9 @@ from .consolidators import (
 )
 from ..clients.catalog_of_bluesky_runs import CatalogOfBlueskyRuns
 
-# Aggregate the Event table rows and StreamDatums in batches before writing to Tiled
-BATCH_SIZE = 10000
+# Aggregate the Event table rows and StreamDatums in batches before writing to Tiled.
+# Each batch is one request, so keep it small enough for Events that carry arrays.
+BATCH_SIZE = 200
 
 # Maximum size of internal arrays from Event docs to write to tabular (SQL) storage; larger arrays will be written
 # as zarr. Set to 0 to write all internal arrays as zarr, and -1 to write all internal arrays to tabular storage.
@@ -1283,7 +1284,7 @@ class TiledWriter:
             to Tiled. All documents for the entire Bluesky Run will be written in JSONLines format,
             allowing for recovery in case of errors during the writing process.
         batch_size : int
-            The number of Events or StreamDatums collect before writing them to Tiled.
+            The number of Events or StreamDatums collect before writing them to Tiled (default 200).
             This is useful for reducing the number of write operations and improving performance when
             writing large amounts of data (e.g. database migration). For streaming applications,
             it is recommended to set this parameter to <= 1, so that each Event or StreamDatum is written
