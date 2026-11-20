@@ -1,5 +1,6 @@
 import logging
 import queue
+import time
 import uuid
 
 import h5py
@@ -768,18 +769,16 @@ def test_subscribe_to_streams_logs_filtered_run_failures(streaming_client, caplo
     accepted_writer("stop", _stop_document(accepted_run_uid, {"baseline": 1}))
 
 
-def test_subscribe_to_streams_stays_open_after_completed_run_drains(streaming_client):
+def test_subscribe_to_streams_releases_drained_run_and_stays_open(streaming_client):
     first_run_uid = uuid.uuid4().hex
     first_descriptor_uid = uuid.uuid4().hex
     second_run_uid = uuid.uuid4().hex
     second_descriptor_uid = uuid.uuid4().hex
     updates: queue.Queue[BlueskyStreamUpdate] = queue.Queue()
-    closed: queue.Queue[str] = queue.Queue()
     writer = TiledWriter(streaming_client, batch_size=1)
     subscription = subscribe_to_streams(
         streaming_client, updates.put, streams={"baseline": "x"}
     )
-    drain_subscription = None
 
     try:
         writer("start", _start_document(first_run_uid))
@@ -796,11 +795,13 @@ def test_subscribe_to_streams_stays_open_after_completed_run_drains(streaming_cl
 
         first_update = updates.get(timeout=5)
         assert first_update.run_uid == first_run_uid
-        drain_subscription, drain_closed = _subscribe_until_closed(
-            streaming_client[first_run_uid], closed, "first"
-        )
         writer("stop", _stop_document(first_run_uid, {"baseline": 1}))
-        assert closed.get(timeout=5) == "first"
+        # TiledWriter closes the run, stream, and table nodes after Stop; the
+        # manager releases that branch and keeps only the root subscription.
+        deadline = time.monotonic() + 5
+        while set(subscription._subscriptions) != {streaming_client.uri}:
+            assert time.monotonic() < deadline, sorted(subscription._subscriptions)
+            time.sleep(0.01)
 
         writer("start", _start_document(second_run_uid))
         writer(
@@ -819,8 +820,6 @@ def test_subscribe_to_streams_stays_open_after_completed_run_drains(streaming_cl
         assert second_update.data().to_dict(orient="list") == {"x": [2.0]}
         assert not subscription.closed
     finally:
-        if drain_subscription is not None:
-            drain_subscription.disconnect()
         subscription.disconnect()
 
     writer("stop", _stop_document(second_run_uid, {"baseline": 1}))
