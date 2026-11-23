@@ -41,8 +41,7 @@ writer = TiledWriter(container, batch_size=1)
 
 `batch_size=1` makes each Event document available for live delivery. The Tiled
 server must have Streaming cache configuration; follow the
-[deployment guide](../how-to/deploy.md) to enable it. The default `start=0`
-replays only records retained by that cache, not the full historical container.
+[deployment guide](../how-to/deploy.md) to enable it.
 
 After a successful Stop, `TiledWriter` closes every writer-owned data node,
 event-stream container, and run container from leaves to root. Tiled delivers
@@ -142,6 +141,14 @@ The root container WebSocket is connected before `subscribe_to_streams` returns.
 Queue Server code can establish the subscription before it submits its first
 plan; future run descendants cannot exist until `TiledWriter` creates their
 nodes.
+
+`start` applies only to the root container subscription. The default, `0`, also
+delivers runs still retained by the streaming cache, not the full historical
+container. Pass `start=None` to receive only runs created after connecting. The
+subscriptions opened for an accepted run's event streams and data nodes always
+start from each node's first retained record, so its data is delivered from the
+beginning even when those subscriptions connect after the writer's first
+updates.
 
 When a producer closes a Tiled stream, the manager releases that completed
 descendant after its callbacks drain. Closure means no more WebSocket updates;

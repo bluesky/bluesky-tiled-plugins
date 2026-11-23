@@ -25,6 +25,10 @@ logger = logging.getLogger(__name__)
 
 
 _EMPTY_START_DOCUMENT: Mapping[str, Any] = MappingProxyType({})
+# Tiled numbers each node's records separately, so the caller's ``start`` applies
+# only to the root container. Every node of an accepted run is read from its first
+# retained record, so nothing written before its subscription connects is lost.
+_DESCENDANT_START = 0
 
 
 @dataclass(frozen=True)
@@ -119,9 +123,11 @@ class BlueskyStreamSubscription:
             executes callbacks asynchronously; exceptions raised by this function
             are not caught by this manager.
         start : int or None
-            Tiled sequence number supplied to every owned subscription. The default,
-            ``0``, replays records retained by the streaming cache. ``None`` receives
-            only new records.
+            Tiled sequence number for the root container subscription. The
+            default, ``0``, replays records retained by the streaming cache.
+            ``None`` receives only runs created after connecting. Subscriptions
+            to an accepted run's nodes always start from their first retained
+            record.
         max_size : int
             Maximum incoming WebSocket message size in bytes. Defaults to
             ``1_000_000``.
@@ -149,7 +155,6 @@ class BlueskyStreamSubscription:
         self._run_filter = run_filter
         self._on_run_stop = on_run_stop
         self._accepted_runs: set[str] = set()
-        self._start = start
         self._max_size = max_size
         self._lock = threading.Lock()
         self._closed = False
@@ -167,6 +172,7 @@ class BlueskyStreamSubscription:
                 container,
                 self._handle_container_child,
                 self._handle_run_metadata_updated,
+                start=start,
             )
             established = True
         finally:
@@ -240,6 +246,8 @@ class BlueskyStreamSubscription:
         node: Container,
         callback: Callable[[LiveChildCreated], None],
         on_metadata_updated: Callable[[LiveChildMetadataUpdated], None] | None = None,
+        *,
+        start: int | None,
     ) -> None:
         def attach(subscription: Subscription) -> None:
             container_subscription = cast(ContainerSubscription, subscription)
@@ -249,7 +257,7 @@ class BlueskyStreamSubscription:
                     on_metadata_updated
                 )
 
-        self._subscribe(node, callback, attach)
+        self._subscribe(node, callback, attach, start)
 
     def _subscribe_data(
         self,
@@ -267,13 +275,14 @@ class BlueskyStreamSubscription:
                 ArraySubscription | TableSubscription, subscription
             ).new_data.add_callback(callback)
 
-        self._subscribe(node, callback, attach)
+        self._subscribe(node, callback, attach, _DESCENDANT_START)
 
     def _subscribe(
         self,
         node: _Subscribable,
         callback: Callable[..., None],
         attach: Callable[[Subscription], None],
+        start: int | None,
     ) -> None:
         uri = node.uri
         subscription: Subscription | None = None
@@ -290,7 +299,7 @@ class BlueskyStreamSubscription:
                 subscription.stream_closed.add_callback(close_callback)
                 self._subscriptions[uri] = (subscription, callback, close_callback)
                 self._ordered_subscription_uris.append(uri)
-                subscription.start_in_thread(self._start, max_size=self._max_size)
+                subscription.start_in_thread(start, max_size=self._max_size)
                 started = True
         finally:
             if subscription is not None and not started:
@@ -397,7 +406,7 @@ class BlueskyStreamSubscription:
         callback: Callable[[LiveChildCreated], None],
     ) -> None:
         try:
-            self._subscribe_container(node, callback)
+            self._subscribe_container(node, callback, start=_DESCENDANT_START)
         except Exception:
             logger.exception("Failed to subscribe to Tiled node %s", node.uri)
 
@@ -536,9 +545,12 @@ def subscribe_to_streams(
         rejected by the filters never trigger it, nor do later metadata updates
         of the run without ``"stop"``.
     start : int or None, optional
-        Tiled sequence number supplied to every owned subscription. The default,
-        ``0``, replays records retained by the streaming cache. ``None`` receives
-        only new records.
+        Tiled sequence number for the root container subscription. The default,
+        ``0``, replays records retained by the streaming cache, including runs
+        created before connecting. ``None`` receives only runs created after
+        connecting. Subscriptions to an accepted run's event streams and data
+        nodes always start from their first retained record, so its data is
+        delivered from the beginning either way.
     max_size : int, optional
         Maximum incoming WebSocket message size in bytes. Defaults to
         ``1_000_000``.

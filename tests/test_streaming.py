@@ -1,5 +1,6 @@
 import logging
 import queue
+import threading
 import time
 import uuid
 
@@ -981,6 +982,50 @@ def _write_run(writer, run_uid, metadata=None):
     )
     writer("event", _event_document(descriptor_uid, 1, {"x": 1.0}))
     writer("stop", _stop_document(run_uid, {"primary": 1}))
+
+
+def test_subscribe_to_streams_start_applies_only_to_root(streaming_client):
+    earlier_run_uid = uuid.uuid4().hex
+    run_uid = uuid.uuid4().hex
+    descriptor_uid = uuid.uuid4().hex
+    updates: queue.Queue[BlueskyStreamUpdate] = queue.Queue()
+    filtered_runs: list[str] = []
+    written = threading.Event()
+    writer = TiledWriter(streaming_client, batch_size=1)
+    _write_run(writer, earlier_run_uid)
+
+    def run_filter(update: LiveChildCreated) -> bool:
+        filtered_runs.append(update.key)
+        # Hold the run until its stream, table, and rows exist, so that every
+        # descendant subscription connects after the writes it must deliver.
+        written.wait(timeout=5)
+        return True
+
+    with subscribe_to_streams(
+        streaming_client,
+        updates.put,
+        streams={"primary": "x"},
+        run_filter=run_filter,
+        start=None,
+    ):
+        writer("start", _start_document(run_uid))
+        writer(
+            "descriptor",
+            _descriptor_document(
+                run_uid, descriptor_uid, "primary", _scalar_data_keys("x")
+            ),
+        )
+        writer("event", _event_document(descriptor_uid, 1, {"x": 1.0}))
+        writer("event", _event_document(descriptor_uid, 2, {"x": 2.0}))
+        written.set()
+
+        received = [updates.get(timeout=5).data()["x"].tolist() for _ in range(2)]
+    writer("stop", _stop_document(run_uid, {"primary": 2}))
+
+    # The earlier run is not replayed, but the new run's descendants are read
+    # from their first record.
+    assert filtered_runs == [run_uid]
+    assert received == [[1.0], [2.0]]
 
 
 def test_on_run_stop_called_once_per_run(streaming_client):
