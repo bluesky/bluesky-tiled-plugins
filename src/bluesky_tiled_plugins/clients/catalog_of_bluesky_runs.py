@@ -254,7 +254,7 @@ class CatalogOfBlueskyRuns(Container):
                 response = self.context.http_client.post(
                     link, content=safe_json_dump({"name": name, "doc": doc})
                 )
-        handle_error(response)
+                handle_error(response)
 
 
 class IndexCallable:
