@@ -121,14 +121,31 @@ class CatalogOfBlueskyRuns(Container):
         # some "magic" here that is helpful in an interactive setting.
         if isinstance(key, str):
             # CASE 1: Interpret key as a uid or partial uid.
+            # A uid from bluesky is a UUID4, 36 characters, so the length
+            # tells which it is, and the matching lookup is tried first: one
+            # request in either case. The other lookup is only a fallback, to
+            # keep keys that are not UUID4s reachable.
             if len(key) == 36:
                 # This looks like a full uid. Try direct lookup first.
                 try:
                     return super().__getitem__(key)
                 except KeyError:
-                    # Fall back to partial uid lookup below.
+                    # It may be the first 36 characters of a longer key.
                     pass
-            return self._lookup_by_partial_uid(key)
+                return self._lookup_by_partial_uid(key)
+            try:
+                return self._lookup_by_partial_uid(key)
+            except ValueError:
+                # The key is too short to be a partial uid, or more than one
+                # run starts with it. It may still be the whole key of a run,
+                # as in "scan1" beside "scan10". (An empty key is not looked
+                # up: it would fetch this catalog itself.)
+                if key.strip("/"):
+                    try:
+                        return super().__getitem__(key)
+                    except KeyError:
+                        pass
+                raise
         if isinstance(key, numbers.Integral):
             if key > 0:
                 # CASE 2: Interpret key as a scan_id.

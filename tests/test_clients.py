@@ -252,7 +252,7 @@ def runs_catalog(client):
     name = f"runs_{uuid.uuid4().hex[:8]}"
     client.create_container(name, specs=[Spec("CatalogOfBlueskyRuns", version="3.0")])
     runs = client[name]
-    # A run's node key is its uid. The two share a 5-character prefix, so a
+    # A run's node key is its uid. These two share a 5-character prefix, so a
     # 5-character partial uid is ambiguous while a 6-character one is unique.
     uids = ["abcde1" + uuid.uuid4().hex[6:], "abcde2" + uuid.uuid4().hex[6:]]
     # A uid as bluesky generates it: a UUID4 with hyphens, 36 characters.
@@ -260,6 +260,9 @@ def runs_catalog(client):
     # A key that is longer than a UUID4, so its first 36 characters look like a
     # full uid but are only part of the key.
     uids.append("87654321" + str(uuid.uuid4())[8:] + "-long")
+    # Keys that are not uids at all: one shorter than the shortest partial uid
+    # allowed, and one that another key starts with.
+    uids.extend(["xy", "scan1", "scan10"])
     for uid in uids:
         runs.create_container(
             uid, metadata={"start": {"uid": uid}}, specs=[Spec("BlueskyRun", "3.0")]
@@ -294,17 +297,27 @@ def test_partial_uid_lookup(runs_catalog, monkeypatch, server_has_key_like):
 
 
 @pytest.mark.parametrize(
-    "partial_uid, error, match",
+    "partial_uid, error, match, num_requests",
     [
-        ("abcde", ValueError, "multiple matches"),
-        ("zzzzz", KeyError, None),
-        ("abc", ValueError, "too short"),
+        # Ambiguous or too short as a partial uid, and not the key of a run
+        # either: the error of the partial uid lookup is the one raised.
+        ("abcde", ValueError, "multiple matches", 2),
+        ("abc", ValueError, "too short", 1),
+        # An empty key is never looked up: it would fetch the catalog itself.
+        ("", ValueError, "too short", 0),
+        ("/", ValueError, "too short", 0),
+        # Nothing starts with this, so there is no key to look up exactly.
+        ("zzzzz", KeyError, None, 1),
     ],
 )
-def test_partial_uid_lookup_errors(runs_catalog, partial_uid, error, match):
+def test_partial_uid_lookup_errors(
+    runs_catalog, partial_uid, error, match, num_requests
+):
     runs, _ = runs_catalog
-    with pytest.raises(error, match=match):
-        runs[partial_uid]
+    with record_history() as history:
+        with pytest.raises(error, match=match):
+            runs[partial_uid]
+    assert len(history.requests) == num_requests
 
 
 def _lookup(runs, key):
@@ -345,6 +358,36 @@ def test_full_length_key_falls_back_to_partial_uid_lookup(runs_catalog):
     assert uid == long_uid
     assert "/metadata/" in first
     assert "/search/" in second
+
+
+def test_key_that_is_not_a_uid_is_reachable(runs_catalog):
+    """
+    A key that fails as a partial uid, because it is too short or because
+    other keys start with it, is looked up as the exact key before giving up.
+    """
+    runs, _ = runs_catalog
+
+    # Too short for a partial uid: no search is made, only the fetch.
+    uid, (path,) = _lookup(runs, "xy")
+    assert uid == "xy"
+    assert "/metadata/" in path
+
+    # "scan10" starts with it too: the search is ambiguous, the fetch is not.
+    uid, (first, second) = _lookup(runs, "scan1")
+    assert uid == "scan1"
+    assert "/search/" in first
+    assert "/metadata/" in second
+
+    # Nothing else starts with this, so it is found as a partial uid would be.
+    uid, (path,) = _lookup(runs, "scan10")
+    assert uid == "scan10"
+    assert "/search/" in path
+
+    # The explicit partial uid accessor does not fall back.
+    with pytest.raises(ValueError, match="multiple matches"):
+        runs.uid["scan1"]
+    with pytest.raises(ValueError, match="too short"):
+        runs.uid["xy"]
 
 
 def test_search_does_not_rewrite_node_key_queries(runs_catalog):
