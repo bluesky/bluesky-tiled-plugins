@@ -6,6 +6,7 @@ from datetime import datetime
 import numpy as np
 import pytest
 from examples.render import render_templated_documents
+from tiled.client import record_history
 from tiled.queries import KeyLike, KeyLookup, Like
 from tiled.structures.core import Spec
 
@@ -246,7 +247,7 @@ def test_export_non_builtin_types():
 
 @pytest.fixture(scope="module")
 def runs_catalog(client):
-    """A SQL-backed `CatalogOfBlueskyRuns` holding two runs with a shared uid prefix."""
+    """A SQL-backed `CatalogOfBlueskyRuns`; its first two runs share a uid prefix."""
     # Unique name: the catalog is shared across the parametrized `app` fixture.
     name = f"runs_{uuid.uuid4().hex[:8]}"
     client.create_container(name, specs=[Spec("CatalogOfBlueskyRuns", version="3.0")])
@@ -254,6 +255,11 @@ def runs_catalog(client):
     # A run's node key is its uid. The two share a 5-character prefix, so a
     # 5-character partial uid is ambiguous while a 6-character one is unique.
     uids = ["abcde1" + uuid.uuid4().hex[6:], "abcde2" + uuid.uuid4().hex[6:]]
+    # A uid as bluesky generates it: a UUID4 with hyphens, 36 characters.
+    uids.append("12345678" + str(uuid.uuid4())[8:])
+    # A key that is longer than a UUID4, so its first 36 characters look like a
+    # full uid but are only part of the key.
+    uids.append("87654321" + str(uuid.uuid4())[8:] + "-long")
     for uid in uids:
         runs.create_container(
             uid, metadata={"start": {"uid": uid}}, specs=[Spec("BlueskyRun", "3.0")]
@@ -299,6 +305,46 @@ def test_partial_uid_lookup_errors(runs_catalog, partial_uid, error, match):
     runs, _ = runs_catalog
     with pytest.raises(error, match=match):
         runs[partial_uid]
+
+
+def _lookup(runs, key):
+    """Look up `key`; return the uid of the run and the requests it took."""
+    with record_history() as history:
+        uid = runs[key].metadata["start"]["uid"]
+    return uid, [request.url.path for request in history.requests]
+
+
+def test_uid_lookup_is_one_request(runs_catalog):
+    """
+    The length of the key picks the lookup that is tried first: a fetch of the
+    run for a full uid (36 characters), a search for anything shorter. Each is
+    right for its own case, so neither costs more than a single request.
+    """
+    runs, uids = runs_catalog
+    full_uid = uids[2]
+    assert len(full_uid) == 36
+
+    uid, (path,) = _lookup(runs, full_uid)
+    assert uid == full_uid
+    assert "/metadata/" in path
+
+    uid, (path,) = _lookup(runs, full_uid[:8])
+    assert uid == full_uid
+    assert "/search/" in path
+
+
+def test_full_length_key_falls_back_to_partial_uid_lookup(runs_catalog):
+    """
+    A 36-character key that is not the whole key is still found, as a partial
+    uid. Only then does the lookup take a second request.
+    """
+    runs, uids = runs_catalog
+    long_uid = uids[3]
+
+    uid, (first, second) = _lookup(runs, long_uid[:36])
+    assert uid == long_uid
+    assert "/metadata/" in first
+    assert "/search/" in second
 
 
 def test_search_does_not_rewrite_node_key_queries(runs_catalog):
