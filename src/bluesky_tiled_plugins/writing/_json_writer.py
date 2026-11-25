@@ -1,9 +1,15 @@
-import json
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from tiled.utils import safe_json_dump
+
 # NOTE: This code is duplicated in src/bluesky/callbacks/json_writer.py
+#
+# Documents are serialized with `tiled.utils.safe_json_dump`, which accepts
+# types that the builtin `json` module rejects (numpy arrays and scalars,
+# datetime objects, bytes, paths). It returns UTF-8 encoded bytes, so the
+# files are opened in binary mode.
 
 
 def default_name(name, doc, suffix=""):
@@ -38,22 +44,19 @@ class JSONWriter:
 
     def __call__(self, name, doc):
         self.filename = self.filename or default_name(name, doc, suffix=".json")
+        record = safe_json_dump({"name": name, "doc": doc})
 
         if name == "start":
-            with open(self.dirname / self.filename, "w") as file:
-                file.write("[\n")
-                json.dump({"name": name, "doc": doc}, file)
-                file.write(",\n")
+            with open(self.dirname / self.filename, "wb") as file:
+                file.write(b"[\n" + record + b",\n")
 
         elif name == "stop":
-            with open(self.dirname / self.filename, "a") as file:
-                json.dump({"name": name, "doc": doc}, file)
-                file.write("\n]")
+            with open(self.dirname / self.filename, "ab") as file:
+                file.write(record + b"\n]")
 
         else:
-            with open(self.dirname / self.filename, "a") as file:
-                json.dump({"name": name, "doc": doc}, file)
-                file.write(",\n")
+            with open(self.dirname / self.filename, "ab") as file:
+                file.write(record + b",\n")
 
 
 class JSONLinesWriter:
@@ -69,10 +72,10 @@ class JSONLinesWriter:
 
     def __call__(self, name, doc):
         self.filename = self.filename or default_name(name, doc, suffix=".jsonl")
+        record = safe_json_dump({"name": name, "doc": doc})
 
-        with open(self.dirname / self.filename, "a") as file:
-            json.dump({"name": name, "doc": doc}, file)
-            file.write("\n")
+        with open(self.dirname / self.filename, "ab") as file:
+            file.write(record + b"\n")
 
 
 class JSONDictWriter:

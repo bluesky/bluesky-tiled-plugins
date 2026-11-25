@@ -109,6 +109,14 @@ docs = [
 ]
 
 
+[tool.uv]
+# Temporary: the fonttools 4.69.0 release on PyPI is incomplete (cp311 wheels
+# for macOS and Linux only, no sdist), so `uv sync` selects it and then fails
+# to install it on other platforms and Python versions. Remove once fixed:
+# https://github.com/fonttools/fonttools/issues/4460
+constraint-dependencies = ["fonttools !=4.69.0"]
+
+
 [tool.hatch]
 version.source = "vcs"
 build.hooks.vcs.version-file = "src/bluesky_tiled_plugins/_version.py"

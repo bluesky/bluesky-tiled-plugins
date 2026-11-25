@@ -1,6 +1,9 @@
+import asyncio
 import json
 import uuid
+from datetime import datetime
 
+import numpy as np
 import pytest
 from examples.render import render_templated_documents
 from tiled.queries import KeyLike, KeyLookup, Like
@@ -8,6 +11,7 @@ from tiled.structures.core import Spec
 
 from bluesky_tiled_plugins import TiledWriter
 from bluesky_tiled_plugins.clients.bluesky_run import _iter_json_seq
+from bluesky_tiled_plugins.exporters import json_seq_exporter
 
 
 @pytest.fixture(scope="module", params=["internal_events", "external_assets"])
@@ -181,6 +185,63 @@ def test_export_nd_numeric_tabular_array(client):
     events = [doc for name, doc in run.v3.documents() if name == "event"]
     assert len(events) == 1
     assert events[0]["data"]["img"] == img
+
+
+def test_export_non_builtin_types():
+    """The JSON-Seq exporter must serialize numpy arrays, numpy scalars and
+    datetime objects, none of which the builtin `json` module accepts.
+
+    This drives the exporter directly, with a stand-in for a run that has
+    no streams, so that the values reach the serializer exactly as given.
+    """
+
+    class EmptyRun:
+        specs = [Spec("BlueskyRun", version="3.0")]
+
+        async def keys_range(self, offset, limit):
+            return []
+
+    async def filter_for_access(adapter):
+        return adapter
+
+    metadata = {
+        "start": {
+            "uid": "u0",
+            "when": datetime(2026, 1, 2, 3, 4, 5),
+            "positions": np.arange(3),
+            "num_points": np.int64(3),
+            "units": "\u00b5m",
+        },
+        "stop": {"uid": "u1", "run_start": "u0", "time": np.float64(1.0)},
+    }
+
+    async def export():
+        return [
+            record
+            async for record in json_seq_exporter(
+                "application/json-seq", EmptyRun(), metadata, filter_for_access
+            )
+        ]
+
+    records = asyncio.run(export())
+    # RFC 7464 framing, as text.
+    assert all(isinstance(record, str) for record in records)
+    assert all(record[0] == "\x1e" and record[-1] == "\n" for record in records)
+
+    payload = "".join(records).encode("utf-8")
+    assert list(_iter_json_seq([payload])) == [
+        (
+            "start",
+            {
+                "uid": "u0",
+                "when": "2026-01-02T03:04:05",
+                "positions": [0, 1, 2],
+                "num_points": 3,
+                "units": "\u00b5m",
+            },
+        ),
+        ("stop", {"uid": "u1", "run_start": "u0", "time": 1.0}),
+    ]
 
 
 @pytest.fixture(scope="module")

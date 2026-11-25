@@ -1,10 +1,10 @@
 import copy
-import json
 import os
 import re
 from collections import defaultdict
 
 from event_model import DocumentNames, schema_validators
+from tiled.utils import safe_json_dump
 
 _DESCRIPTOR_VALIDATOR = schema_validators[DocumentNames.descriptor]
 
@@ -357,6 +357,8 @@ async def json_seq_exporter(mimetype, adapter, metadata, filter_for_access):
 
     # RFC 7464: each record is preceded by the ASCII record-separator
     # character (\x1E) and terminated by a newline.
-    yield "\x1e" + json.dumps(start_doc) + "\n"
+    # `safe_json_dump` accepts types that the builtin `json` module rejects
+    # (numpy arrays and scalars, datetime objects, ...). It returns UTF-8 bytes.
+    yield "\x1e" + safe_json_dump(start_doc).decode("utf-8") + "\n"
     for doc in result:
-        yield "\x1e" + json.dumps(doc) + "\n"
+        yield "\x1e" + safe_json_dump(doc).decode("utf-8") + "\n"
