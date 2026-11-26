@@ -137,8 +137,11 @@ class CatalogOfBlueskyRuns(Container):
                 return self._lookup_by_partial_uid(key)
             except ValueError:
                 # The key is too short to be a partial uid, or more than one
-                # run starts with it. It may still be the whole key of a run,
-                # as in "scan1" beside "scan10". (An empty key is not looked
+                # run starts with it. It may still be the whole key of some
+                # child node that is not keyed by a UUID4, as nothing actually
+                # enforces that all children of a CatalogOfBlueskyRuns adhere
+                # to UUID4 keys. Thus, we fall back to resolve a key like
+                # "scan1" beside "scan10". (An empty key is not looked
                 # up: it would fetch this catalog itself.)
                 if key.strip("/"):
                     try:
